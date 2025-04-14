@@ -72,7 +72,7 @@ const GenrePreferencesPage = () => {
                     
                     if (searchResponse.data && searchResponse.data.length > 0) {
                         // Add books to user's playlist to trigger recommendations
-                        for (const book of searchResponse.data.slice(0, 2)) { // Add up to 2 books per genre
+                        for (const book of searchResponse.data.slice(0, 1)) { // Add up to 1 books per genre
                             console.log(`Adding book to playlist: ${book.title}`);
                             await axios.post(`http://localhost:5000/user/${userData.id}/playlist_genre`, {
                                 google_book_id: book.google_book_id,
@@ -85,7 +85,7 @@ const GenrePreferencesPage = () => {
                                 tag: 'preference' // Special tag to identify preference-based books
                             });
                         }
-                        const response = await fetch(`http://localhost:5000/user/Ai`, {
+                        const response = await fetch(`http://localhost:5000/user/${userData.id}/Ai`, {
                             method: "POST", headers: { "Content-Type": "application/json" }
                         });
                         const data = await response.json()

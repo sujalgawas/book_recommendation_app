@@ -682,14 +682,21 @@ def add_playlist_book_genre(user_id):
     })
     
 #instead of calling AI to run in the backend i will try to just add the books in the recommend SQL table 
-@app.route('/user/Ai',methods=['GET', 'POST'])
-def Ai_calling():
-    bg_thread = threading.Thread(target=run_background_recommendations_for_all)
-    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
-    bg_thread.start()
+@app.route('/user/<int:user_id>/Ai', methods=['GET', 'POST'])
+def Ai_calling(user_id):
+    # Check if the user exists
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'fail', 'message': 'User not found'}), 404
+    
+    # Call the existing add_recommendations function to process the user's playlist
+    # and add recommendations to the recommend table
+    result = add_recommendations(user_id)
+    
+    # Return the result from add_recommendations or a success message
     return jsonify({
-        'status' : 'success',
-        'message' : 'Ai running background'
+        'status': 'success',
+        'message': 'AI recommendations generated successfully'
     })
     
 
