@@ -680,7 +680,8 @@ def add_playlist_book_genre(user_id):
         'message': 'Book added to playlist',
         'book': book.to_dict()
     })
-
+    
+#instead of calling AI to run in the backend i will try to just add the books in the recommend SQL table 
 @app.route('/user/Ai',methods=['GET', 'POST'])
 def Ai_calling():
     bg_thread = threading.Thread(target=run_background_recommendations_for_all)
