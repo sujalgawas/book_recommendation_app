@@ -2,6 +2,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 
+#test for git push action 
 app = Flask(__name__)
 
 # Configuration for PostgreSQL database
