@@ -1,0 +1,297 @@
+/* BookPage.css */
+
+/* Base Page Styles */
+.book-page {
+    min-height: 100vh;
+    background-color: #1a1a2e; /* Main dark background */
+    color: #ffffff;
+    padding: 30px;
+    font-family: Arial, sans-serif; /* Example font */
+  }
+  
+  /* Loading/Not Found States */
+  .loading-container,
+  .not-found-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 80vh; /* Adjust as needed */
+    text-align: center;
+  }
+  .loading-indicator {
+    font-size: 1.5em;
+  }
+  .not-found-message {
+    color: #e94560; /* Red for error */
+  }
+  .home-button { /* Style for the Go Home button */
+    margin-top: 20px;
+    /* Reuse action-button styles */
+    border: 1px solid #fff;
+    border-radius: 20px;
+    padding: 10px 20px;
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1em;
+    background-color: transparent;
+    text-decoration: none;
+  }
+  .home-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  
+  /* Content Wrapper */
+  .content-wrapper {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  
+  /* Back Button */
+  .back-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #888; /* Muted color */
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+    margin-bottom: 30px;
+    font-size: 1em;
+    padding: 0; /* Remove default button padding */
+    transition: color 0.2s ease;
+  }
+  .back-button:hover {
+    color: #fff;
+  }
+  .back-button svg { /* Style the icon if needed */
+    margin-right: 5px;
+  }
+  
+  
+  /* Main Layout (Flexbox) */
+  .book-main-layout {
+    display: flex;
+    flex-direction: row; /* Default */
+    flex-wrap: wrap; /* Allow wrapping on small screens */
+    gap: 30px;
+  }
+  
+  .column-image-actions {
+    flex: 1 1 300px; /* Flex grow, shrink, basis */
+    min-width: 250px;
+    text-align: center;
+  }
+  
+  .column-details {
+    flex: 2 1 500px; /* Takes roughly twice the space */
+    min-width: 300px;
+  }
+  
+  /* Book Image */
+  .book-image {
+    max-width: 100%;
+    max-height: 500px;
+    height: auto;
+    object-fit: contain;
+    border-radius: 15px; /* Rounded corners like playlist */
+    margin-bottom: 20px;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+    display: block; /* Needed for margin auto centering */
+    margin-left: auto;
+    margin-right: auto;
+  }
+  
+  /* Action Buttons (Like, Add to Playlist) */
+  .actions-container {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  
+  .action-button { /* Base style */
+    border: 1px solid #0f3460; /* Default blue border */
+    border-radius: 20px; /* Pill shape */
+    padding: 10px 20px;
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 1em;
+    background-color: transparent;
+    text-decoration: none;
+    min-width: 120px; /* Minimum width */
+  }
+  .action-button:hover {
+    background-color: rgba(15, 52, 96, 0.3); /* Subtle hover */
+  }
+  .action-button svg {
+    margin-right: 4px;
+  }
+  .action-button.liked { /* Style when liked */
+    background-color: #e94560; /* Red background */
+    border-color: #e94560; /* Red border */
+  }
+  .action-button.liked:hover {
+    background-color: #c83c50; /* Darker red on hover */
+  }
+  .action-button.add-playlist { /* Specific style for add playlist */
+     border-color: #5dade2; /* Match reading tag color */
+     color: #5dade2;
+  }
+  .action-button.add-playlist:hover {
+     background-color: rgba(93, 173, 226, 0.1);
+     color: #85c1e9;
+  }
+  
+  
+  /* Playlist Status Section */
+  .playlist-status-box {
+    margin-top: 20px;
+    border: 1px solid #2a2a4a; /* Darker border */
+    border-radius: 10px;
+    padding: 15px;
+    background-color: #16213e; /* Slightly different background */
+  }
+  .playlist-status-box h5 {
+    margin-bottom: 15px;
+    text-align: center;
+    font-weight: normal;
+    color: #aaa;
+  }
+  .playlist-buttons-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px; /* Gap between buttons */
+    justify-content: center;
+  }
+  .playlist-tag-button { /* Base style for tag buttons */
+    border: 1px solid #0f3460; /* Default border */
+    border-radius: 5px;
+    padding: 6px 12px;
+    color: white;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.9em;
+    background-color: transparent;
+    transition: all 0.2s ease;
+    text-decoration: none;
+  }
+  .playlist-tag-button svg {
+    margin-right: 3px;
+  }
+  .playlist-tag-button:hover {
+    background-color: rgba(15, 52, 96, 0.3); /* Subtle hover */
+  }
+  
+  /* Tag specific colors (applied as separate classes) */
+  .playlist-tag-button.tag-reading { border-color: #5dade2; color: #5dade2; }
+  .playlist-tag-button.tag-completed { border-color: #58d68d; color: #58d68d; }
+  .playlist-tag-button.tag-dropped { border-color: #f5b041; color: #f5b041; }
+  .playlist-tag-button.tag-save_later { border-color: #af7ac5; color: #af7ac5; }
+  .playlist-tag-button.remove-button { border-color: #e94560; color: #e94560; }
+  
+  /* Active state for tags */
+  .playlist-tag-button.active {
+    background-color: #0f3460; /* Active blue background */
+    border-color: #0f3460;
+    color: white; /* Ensure text is white when active */
+  }
+  .playlist-tag-button.remove-button:hover { /* Specific hover for remove */
+     background-color: rgba(233, 69, 96, 0.1);
+  }
+  
+  
+  /* Book Details Text Styles */
+  .book-title {
+    font-size: 2.5em;
+    margin-bottom: 5px;
+    font-weight: bold;
+    color: #fff;
+  }
+  .book-authors {
+    font-size: 1.2em;
+    color: #aaa;
+    margin-bottom: 20px;
+  }
+  .rating-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    font-size: 1.1em;
+    color: #fff;
+  }
+  .rating-container svg { /* Style star */
+     color: gold; /* Use color instead of fill if needed */
+     fill: gold;
+  }
+  .section-title {
+    font-size: 1.8em;
+    margin-bottom: 15px;
+    border-bottom: 1px solid #2a2a4a; /* Subtle separator */
+    padding-bottom: 10px;
+    color: #fff;
+    font-weight: normal;
+  }
+  .genre-text {
+    font-size: 1em;
+    color: #ccc;
+    display: inline-block;
+    background-color: #16213e; /* Match card background */
+    padding: 5px 10px;
+    border-radius: 5px;
+    margin-bottom: 30px; /* Add margin below genre */
+  }
+  .synopsis-text {
+    color: #ccc;
+    line-height: 1.6;
+    margin-bottom: 30px; /* Add margin below synopsis */
+  }
+  
+  /* Similar Books Section */
+  .similar-books-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 15px;
+  }
+  .similar-book-card {
+    background-color: #16213e;
+    border-radius: 10px;
+    padding: 10px;
+    cursor: pointer;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    text-decoration: none;
+    color: #fff;
+    border: 1px solid #2a2a4a; /* Subtle border */
+  }
+  .similar-book-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+  }
+  .similar-book-image {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    border-radius: 8px;
+    margin-bottom: 10px;
+  }
+  .similar-book-title {
+    font-size: 0.9em;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
