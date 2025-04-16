@@ -14,6 +14,7 @@ import logging
 import threading
 import random
 from googleapiclient.errors import HttpError
+import logging
 
 app = Flask(__name__)
 CORS(app)
@@ -494,59 +495,73 @@ def add_liked_book(user_id):
     
 @app.route('/book/<string:google_book_id>', methods=['GET'])
 def get_book_details(google_book_id):
-    """Fetches details for a specific book using its Google Books ID."""
+    """Fetches details for a specific book using its Google Books ID, including sale info."""
+    app.logger.info(f"Attempting to fetch book details for ID: {google_book_id}") # Use app logger
     try:
-        # Add debug logging
-        print(f"Fetching book details for ID: {google_book_id}")
-        
-        # Use the get method for specific volume lookup
+        # --- Make the call to Google Books API ---
+        # Ensure 'service' is initialized correctly. Upgrading libraries might help here.
         response = service.volumes().get(volumeId=google_book_id).execute()
-        
-        # Debug print the response
-        print("API Response:", response)
-        
+        # app.logger.debug(f"Google Books API Raw Response: {response}") # Verbose debugging
+
+        # --- Process the response ---
         volume_info = response.get('volumeInfo', {})
+        sale_info = response.get('saleInfo', {})
         image_links = volume_info.get('imageLinks', {})
-        
-        # Attempt to get the best available image
+
+        # Get Image URL
         image_url = (
-            image_links.get('extraLarge') or
-            image_links.get('large') or
-            image_links.get('medium') or
-            image_links.get('thumbnail', None)
-        )
+            image_links.get('extraLarge') or image_links.get('large') or
+            image_links.get('medium') or image_links.get('thumbnail')
+        ) # Defaults to None if all are missing
 
-        # Extract genre information
+        # Get Genre
         categories = volume_info.get('categories', [])
-        genre = ', '.join(categories) if categories else 'N/A'
+        genre = categories[0] if categories else 'N/A'
 
+        # Extract Price and Buy Link
+        list_price = sale_info.get('listPrice') # e.g., {'amount': 19.99, 'currencyCode': 'USD'}
+        buy_link = sale_info.get('buyLink')     # URL string or None
+
+        # Construct the details dictionary
         book_details = {
             'id': response.get('id'),
             'google_book_id': response.get('id'),
             'title': volume_info.get('title', 'N/A'),
             'authors': ', '.join(volume_info.get('authors', ['Unknown'])),
             'genre': genre,
-            'synopsis': volume_info.get('description', 'No synopsis available'),
-            'rating': volume_info.get('averageRating', None),
-            'image_link': image_url
+            'synopsis': volume_info.get('description', 'No synopsis available.'),
+            'rating': volume_info.get('averageRating'), # Returns number or None
+            'image_link': image_url,
+            'listPrice': list_price,
+            'buyLink': buy_link
         }
-        
-        print("Processed book details:", book_details)
+
+        app.logger.info(f"Successfully processed details for book ID: {google_book_id}")
         return jsonify(book_details)
 
     except HttpError as e:
-        # Handle Google Books API specific errors
-        error_message = f"Google Books API error: {str(e)}"
-        print(error_message)
-        return jsonify({'error': error_message}), 500
-        
+        # Handle specific Google API errors
+        status_code = e.resp.status if hasattr(e, 'resp') else 500
+        error_message = f"Google Books API error (Status: {status_code}): {str(e)}"
+        app.logger.error(f"HttpError fetching {google_book_id}: {error_message}", exc_info=True) # Log full error
+        if status_code == 404:
+             error_message = "Book not found via Google Books API."
+        # Return specific error code if possible
+        return jsonify({'error': error_message}), status_code
+
+    except requests.exceptions.SSLError as ssl_e: # Catch potential SSLError from underlying requests library
+         error_message = f"SSL Error connecting to Google Books API: {str(ssl_e)}. Check network/firewall or try upgrading libraries (requests, urllib3, certifi)."
+         app.logger.error(f"SSLError fetching {google_book_id}: {error_message}", exc_info=True)
+         return jsonify({'error': error_message}), 500
+
     except Exception as e:
-        # Handle any other unexpected errors
-        error_message = f"Unexpected error: {str(e)}"
-        print(error_message)
+        # Handle any other unexpected errors (including potential SSL errors from httplib2/other libs)
+        error_message = f"Unexpected error fetching book details: {str(e)}"
+         # Check if it's the specific SSL error you saw
+        if "[SSL: WRONG_VERSION_NUMBER]" in str(e):
+             error_message += " [SSL: WRONG_VERSION_NUMBER] detected. Please try upgrading Python libraries (pip install --upgrade google-api-python-client requests urllib3 certifi) and ensure your system's OpenSSL is up-to-date. Also check network proxies/firewalls."
+        app.logger.error(f"Unexpected error fetching {google_book_id}: {error_message}", exc_info=True)
         return jsonify({'error': error_message}), 500
-
-
     
 # Endpoint to remove a book from a user's liked books
 @app.route('/user/<int:user_id>/liked/<string:book_id>', methods=['DELETE'])

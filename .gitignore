@@ -8,6 +8,7 @@ __pycache__/
 *.pkl
 *.faiss
 env/
+env1/
 backend/env/
 backend/__pycache__/
 *.db
