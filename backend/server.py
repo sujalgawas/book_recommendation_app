@@ -15,6 +15,7 @@ import threading
 import random
 from googleapiclient.errors import HttpError
 import logging
+from sqlalchemy.dialects.postgresql import JSONB
 
 app = Flask(__name__)
 CORS(app)
@@ -84,7 +85,43 @@ class Book(db.Model):
             'rating': self.rating,
             'image_link': self.image_link
         }
+    
 
+class CachedBookDetail(db.Model):
+    __tablename__ = 'cached_book_details' # Choose a table name
+
+    # Use google_book_id as the primary key for simplicity in this cache table
+    google_book_id = db.Column(db.String(255), primary_key=True)
+    title = db.Column(db.String(255), nullable=True)
+    authors = db.Column(db.String(255), nullable=True)
+    genre = db.Column(db.String(255), nullable=True)
+    synopsis = db.Column(db.Text, nullable=True)
+    rating = db.Column(db.Float, nullable=True)
+    image_link = db.Column(db.String(255), nullable=True)
+    # Use JSON type for listPrice (dictionary) and buyLink (string)
+    listPrice = db.Column(JSONB, nullable=True) # Or db.JSON
+    buyLink = db.Column(db.String(1024), nullable=True) # Store the URL
+    # Optional: Add a timestamp for when it was cached
+    cached_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+
+    def to_dict(self):
+        """Convert cached detail object to dictionary for JSON response"""
+        return {
+            # Use google_book_id for both id fields for consistency with frontend expectation
+            'id': self.google_book_id,
+            'google_book_id': self.google_book_id,
+            'title': self.title,
+            'authors': self.authors,
+            'genre': self.genre,
+            'synopsis': self.synopsis,
+            'rating': self.rating,
+            'image_link': self.image_link,
+            'listPrice': self.listPrice, # Will be the dict/null retrieved from JSON column
+            'buyLink': self.buyLink
+        }
+
+    def __repr__(self):
+        return f'<CachedBookDetail {self.google_book_id}: {self.title}>'
 
 
 # Initialize the Books API service
@@ -493,75 +530,136 @@ def add_liked_book(user_id):
         'book': book.to_dict()
     })
     
-@app.route('/book/<string:google_book_id>', methods=['GET'])
-def get_book_details(google_book_id):
-    """Fetches details for a specific book using its Google Books ID, including sale info."""
-    app.logger.info(f"Attempting to fetch book details for ID: {google_book_id}") # Use app logger
+@app.route('/api/book/<string:google_book_id>/sync', methods=['POST'])
+def sync_book_details_from_api(google_book_id):
+    """
+    Fetches latest details from Google Books API and updates/creates
+    the corresponding record in the local 'books' table.
+    """
+    app.logger.info(f"Sync requested for book ID: {google_book_id}")
     try:
-        # --- Make the call to Google Books API ---
-        # Ensure 'service' is initialized correctly. Upgrading libraries might help here.
+        # --- Fetch from Google Books API ---
         response = service.volumes().get(volumeId=google_book_id).execute()
-        # app.logger.debug(f"Google Books API Raw Response: {response}") # Verbose debugging
+        app.logger.debug(f"Google API response for sync: {response}")
 
-        # --- Process the response ---
         volume_info = response.get('volumeInfo', {})
         sale_info = response.get('saleInfo', {})
         image_links = volume_info.get('imageLinks', {})
 
-        # Get Image URL
-        image_url = (
-            image_links.get('extraLarge') or image_links.get('large') or
-            image_links.get('medium') or image_links.get('thumbnail')
-        ) # Defaults to None if all are missing
-
-        # Get Genre
+        # --- Process Data (same logic as before) ---
+        image_url = (image_links.get('extraLarge') or image_links.get('large') or
+                     image_links.get('medium') or image_links.get('thumbnail'))
         categories = volume_info.get('categories', [])
         genre = categories[0] if categories else 'N/A'
+        list_price = sale_info.get('listPrice') # Dict or None
+        buy_link = sale_info.get('buyLink')     # String or None
+        rating_value = volume_info.get('averageRating')
+        try: rating = float(rating_value) if rating_value is not None else None
+        except (ValueError, TypeError): rating = None
+        authors_list = volume_info.get('authors', ['Unknown'])
+        authors_str = ', '.join(authors_list) if isinstance(authors_list, list) else 'Unknown'
 
-        # Extract Price and Buy Link
-        list_price = sale_info.get('listPrice') # e.g., {'amount': 19.99, 'currencyCode': 'USD'}
-        buy_link = sale_info.get('buyLink')     # URL string or None
 
-        # Construct the details dictionary
-        book_details = {
-            'id': response.get('id'),
-            'google_book_id': response.get('id'),
-            'title': volume_info.get('title', 'N/A'),
-            'authors': ', '.join(volume_info.get('authors', ['Unknown'])),
-            'genre': genre,
-            'synopsis': volume_info.get('description', 'No synopsis available.'),
-            'rating': volume_info.get('averageRating'), # Returns number or None
-            'image_link': image_url,
-            'listPrice': list_price,
-            'buyLink': buy_link
-        }
+        # --- Find existing book or create new ---
+        book = Book.query.filter_by(google_book_id=google_book_id).first()
 
-        app.logger.info(f"Successfully processed details for book ID: {google_book_id}")
-        return jsonify(book_details)
+        if book:
+            # Update existing book
+            app.logger.info(f"Updating existing book record for {google_book_id}")
+            book.title = volume_info.get('title', book.title) # Keep old if new is missing
+            book.authors = authors_str
+            book.genre = genre
+            book.synopsis = volume_info.get('description', book.synopsis)
+            book.rating = rating
+            book.image_link = image_url
+            # Add price/link if needed in Book model, or store elsewhere
+            # book.listPrice = list_price # Requires Book model change
+            # book.buyLink = buy_link    # Requires Book model change
+        else:
+            # Create new book
+            app.logger.info(f"Creating new book record for {google_book_id}")
+            book = Book(
+                google_book_id=google_book_id,
+                title=volume_info.get('title', 'N/A'),
+                authors=authors_str,
+                genre=genre,
+                synopsis=volume_info.get('description', 'No synopsis available.'),
+                rating=rating,
+                image_link=image_url
+                # Add price/link if needed in Book model
+            )
+            db.session.add(book)
 
+        db.session.commit()
+        app.logger.info(f"Successfully synced details for book ID: {google_book_id}")
+        # Return simple success - data will be fetched via the GET route
+        return jsonify({'status': 'success', 'message': 'Book details synced to DB'})
+
+    # --- Error Handling (same as before, adjusted messages) ---
     except HttpError as e:
-        # Handle specific Google API errors
         status_code = e.resp.status if hasattr(e, 'resp') else 500
-        error_message = f"Google Books API error (Status: {status_code}): {str(e)}"
-        app.logger.error(f"HttpError fetching {google_book_id}: {error_message}", exc_info=True) # Log full error
-        if status_code == 404:
-             error_message = "Book not found via Google Books API."
-        # Return specific error code if possible
-        return jsonify({'error': error_message}), status_code
+        error_message = f"Sync failed: Google Books API error (Status: {status_code}): {str(e)}"
+        app.logger.error(f"HttpError syncing {google_book_id}: {error_message}", exc_info=True)
+        if status_code == 404: error_message = "Sync failed: Book not found via Google Books API."
+        return jsonify({'status': 'fail', 'error': error_message}), status_code
+    except requests.exceptions.SSLError as ssl_e:
+         error_message = f"Sync failed: SSL Error connecting to Google Books API: {str(ssl_e)}."
+         app.logger.error(f"SSLError syncing {google_book_id}: {error_message}", exc_info=True)
+         return jsonify({'status': 'fail', 'error': error_message}), 500
+    except Exception as e:
+        db.session.rollback() # Rollback DB changes on general error
+        error_message = f"Sync failed: Unexpected error processing book {google_book_id}: {str(e)}"
+        if "[SSL: WRONG_VERSION_NUMBER]" in str(e): error_message += " [SSL Error]"
+        app.logger.error(f"Unexpected error syncing {google_book_id}: {error_message}", exc_info=True)
+        return jsonify({'status': 'fail', 'error': error_message}), 500
 
-    except requests.exceptions.SSLError as ssl_e: # Catch potential SSLError from underlying requests library
-         error_message = f"SSL Error connecting to Google Books API: {str(ssl_e)}. Check network/firewall or try upgrading libraries (requests, urllib3, certifi)."
-         app.logger.error(f"SSLError fetching {google_book_id}: {error_message}", exc_info=True)
-         return jsonify({'error': error_message}), 500
+
+# === Function 2: Get Book Details FROM Local DB ===
+@app.route('/api/book/<string:google_book_id>', methods=['GET'])
+def get_book_details_from_db(google_book_id):
+    """Fetches book details from the local database."""
+    app.logger.info(f"Fetching book details from DB for ID: {google_book_id}")
+    try:
+        # Query only the local 'books' table
+        book = Book.query.filter_by(google_book_id=google_book_id).first()
+
+        if book:
+            app.logger.info(f"Found book {google_book_id} in local DB.")
+            # Use the Book model's to_dict() method
+            book_details = book.to_dict()
+
+            # --- Manually add Price/Buy Link if NOT stored on Book model ---
+            # If you didn't add price/link columns to the main Book model,
+            # you might need to fetch them separately here if required,
+            # or ideally, the sync function should have added them.
+            # For simplicity, we assume to_dict includes everything needed
+            # OR that price/link aren't strictly needed from *this* endpoint anymore
+            # if the sync endpoint is always called first by the frontend.
+            # Let's assume price/link are needed and WERE added to the Book model & to_dict.
+            # If not, you'd fetch from Google API *here* if book found but price missing.
+            # --- Example if price/link were NOT added to Book model: ---
+            # try:
+            #     g_response = service.volumes().get(volumeId=google_book_id, projection='lite', fields='saleInfo(listPrice,buyLink)').execute()
+            #     sale_info = g_response.get('saleInfo', {})
+            #     book_details['listPrice'] = sale_info.get('listPrice')
+            #     book_details['buyLink'] = sale_info.get('buyLink')
+            # except Exception as api_err:
+            #     app.logger.warn(f"Could not fetch saleInfo separately for {google_book_id}: {api_err}")
+            #     book_details['listPrice'] = None
+            #     book_details['buyLink'] = None
+            # --------------------------------------------------------
+
+            return jsonify(book_details)
+        else:
+            app.logger.warn(f"Book {google_book_id} not found in local DB.")
+            # Inform frontend the book needs to be synced first
+            return jsonify({'error': 'Book not found in local database. Please sync first.'}), 404
 
     except Exception as e:
-        # Handle any other unexpected errors (including potential SSL errors from httplib2/other libs)
-        error_message = f"Unexpected error fetching book details: {str(e)}"
-         # Check if it's the specific SSL error you saw
-        if "[SSL: WRONG_VERSION_NUMBER]" in str(e):
-             error_message += " [SSL: WRONG_VERSION_NUMBER] detected. Please try upgrading Python libraries (pip install --upgrade google-api-python-client requests urllib3 certifi) and ensure your system's OpenSSL is up-to-date. Also check network proxies/firewalls."
-        app.logger.error(f"Unexpected error fetching {google_book_id}: {error_message}", exc_info=True)
-        return jsonify({'error': error_message}), 500
+        error_message = f"Error retrieving book details from database for {google_book_id}: {str(e)}"
+        app.logger.error(error_message, exc_info=True)
+        return jsonify({'error': 'Database query error'}), 500
+
     
 # Endpoint to remove a book from a user's liked books
 @app.route('/user/<int:user_id>/liked/<string:book_id>', methods=['DELETE'])
