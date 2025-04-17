@@ -794,24 +794,59 @@ def add_playlist_book_genre(user_id):
         'book': book.to_dict()
     })
     
-#instead of calling AI to run in the backend i will try to just add the books in the recommend SQL table 
-@app.route('/user/<int:user_id>/Ai', methods=['GET', 'POST'])
-def Ai_calling(user_id):
-    # Check if the user exists
+@app.route('/user/<int:user_id>/generate-recommendations', methods=['POST'])
+def trigger_recommendations(user_id):
+    """
+    Generates recommendations based on the user's current playlist.
+    """
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'fail', 'message': 'User not found'}), 404
-    
-    # Call the existing add_recommendations function to process the user's playlist
-    # and add recommendations to the recommend table
-    result = add_recommendations(user_id)
-    
-    # Return the result from add_recommendations or a success message
-    return jsonify({
-        'status': 'success',
-        'message': 'AI recommendations generated successfully'
-    })
-    
+
+    try:
+        # Call the function that processes the playlist and adds recommendations
+        result = add_recommendations(user_id) # Assuming this function exists
+
+        # Optional: Check result if needed
+        # if result.get('status') != 'success':
+        #     return jsonify({'status': 'fail', 'message': 'Failed to generate recommendations'}), 500
+
+        return jsonify({
+            'status': 'success',
+            'message': 'AI recommendations generated successfully based on current playlist.'
+        })
+
+    except Exception as e:
+        db.session.rollback() # Rollback if recommendation generation fails
+        print(f"Error generating recommendations for user {user_id}: {e}")
+        return jsonify({'status': 'fail', 'message': f'An error occurred during recommendation generation: {e}'}), 500
+
+# --- Endpoint 2: Clear Playlist ---
+@app.route('/user/<int:user_id>/clear-playlist', methods=['DELETE']) # Using DELETE method is conventional for clearing/deleting resources
+def clear_user_playlist(user_id):
+    """
+    Deletes all books from the specified user's playlist.
+    """
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'status': 'fail', 'message': 'User not found'}), 404
+
+    try:
+        # Create and execute the delete statement for the playlist_books table
+        stmt = playlist_books.delete().where(playlist_books.c.user_id == user_id)
+        db.session.execute(stmt)
+        db.session.commit()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'User playlist cleared successfully.'
+        })
+
+    except Exception as e:
+        db.session.rollback() # Rollback if deletion fails
+        print(f"Error clearing playlist for user {user_id}: {e}")
+        return jsonify({'status': 'fail', 'message': f'An error occurred while clearing playlist: {e}'}), 500
+
 
 # Endpoint to add a book to a user's playlist
 @app.route('/user/<int:user_id>/playlist', methods=['POST'])
