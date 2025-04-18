@@ -16,6 +16,8 @@ import random
 from googleapiclient.errors import HttpError
 import logging
 from sqlalchemy.dialects.postgresql import JSONB
+from werkzeug.security import generate_password_hash, check_password_hash # <--- Add these imports
+import datetime
 
 app = Flask(__name__)
 CORS(app)
@@ -50,10 +52,42 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     email = db.Column(db.String(100), unique=True, nullable=False)
-    password = db.Column(db.String(100), nullable=False)  # In production, store a hashed password
+
+    # --- << CHANGE: Store hash instead of plaintext >> ---
+    # Rename column and increase length for the hash
+    password_hash = db.Column(db.String(128), nullable=False)
+    # -----------------------------------------------------
+
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+    # Add the preferences flag if you haven't already from previous steps
+    has_selected_preferences = db.Column(db.Boolean, default=False, nullable=False)
+
+    # Relationships (Keep as they were)
     liked_books = db.relationship('Book', secondary=liked_books, backref=db.backref('liked_by', lazy='dynamic'))
     playlist_books = db.relationship('Book', secondary=playlist_books, backref=db.backref('playlist_for', lazy='dynamic'))
+
+    # --- << ADD: Password Hashing Methods >> ---
+    def set_password(self, password):
+        """Create hashed password."""
+        # Hashes the password with a random salt (default method)
+        self.password_hash = generate_password_hash(password, method='pbkdf2:sha256') # Explicitly choose a strong method
+
+    def check_password(self, password):
+        """Check hashed password."""
+        # Checks the provided password against the stored hash
+        return check_password_hash(self.password_hash, password)
+    # ---------------------------------------
+
+    def to_dict(self):
+        """Returns user data as a dictionary suitable for JSON serialization."""
+        # Make sure this method exists from previous steps
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'has_selected_preferences': self.has_selected_preferences
+            # --- IMPORTANT: NEVER return password_hash here ---
+        }
 
     def __repr__(self):
         return f'<User {self.username}>'
@@ -430,20 +464,27 @@ def search():
 def login():
     data = request.get_json()
     username = data.get('username')
-    password = data.get('password')
+    password = data.get('password') # Plaintext password from request
+
+    if not username or not password:
+         return jsonify({'status': 'fail', 'message': 'Username and password required'}), 400
+
     user = User.query.filter_by(username=username).first()
-    # For demonstration only: compare plaintext; in production, compare hashed passwords.
-    if user and user.password == password:
+
+    # --- << CHANGE: Check hashed password >> ---
+    if user and user.check_password(password):
+    # ----------------------------------------
+        # Password matches
+        # Use the to_dict method (ensure it includes has_selected_preferences)
+        user_data = user.to_dict()
+        # Add Flask-Login logic here if using it: login_user(user)
         return jsonify({
             'status': 'success',
             'message': 'Login successful',
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'email': user.email
-            }
+            'user': user_data
         })
     else:
+        # Password doesn't match or user doesn't exist
         return jsonify({
             'status': 'fail',
             'message': 'Invalid credentials'
@@ -454,25 +495,39 @@ def signup():
     data = request.get_json()
     username = data.get('username')
     email = data.get('email')
-    password = data.get('password')
+    password = data.get('password') # Plaintext password from request
+
+    if not username or not email or not password:
+         return jsonify({'status': 'fail', 'message': 'Username, email, and password required'}), 400
+
     # Check if user with same username or email already exists
     if User.query.filter((User.username == username) | (User.email == email)).first():
         return jsonify({
             'status': 'fail',
             'message': 'User with that username or email already exists'
         }), 400
-    new_user = User(username=username, email=email, password=password)
+
+    # Create user object without password first
+    new_user = User(username=username, email=email)
+    # --- << CHANGE: Set hashed password >> ---
+    new_user.set_password(password)
+    # -------------------------------------
+
     db.session.add(new_user)
-    db.session.commit()
-    return jsonify({
-        'status': 'success',
-        'message': 'User created successfully',
-        'user': {
-            'id': new_user.id,
-            'username': new_user.username,
-            'email': new_user.email
-        }
-    })
+    try:
+        db.session.commit()
+        # Use the to_dict method to get user data (without hash)
+        user_data = new_user.to_dict()
+        return jsonify({
+            'status': 'success',
+            'message': 'User created successfully',
+            'user': user_data
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error during signup commit for {username}: {e}", exc_info=True)
+        return jsonify({'status': 'fail', 'message': 'Database error during signup'}), 500
+    
 # Get a user's liked books
 @app.route('/user/<int:user_id>/liked', methods=['GET'])
 def get_liked_books(user_id):

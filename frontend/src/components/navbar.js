@@ -129,7 +129,6 @@ const Navbar = () => {
                                     // Logged Out options
                                     <>
                                         <li><Link className="dropdown-item" to="/login">Login</Link></li>
-                                        <li><Link className="dropdown-item" to="/signup">Sign Up</Link></li>
                                     </>
                                 )}
                             </ul>
