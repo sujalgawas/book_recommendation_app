@@ -44,3 +44,5 @@ test.csv
 
 # Ignore nested git repo
 backend/book_recommender_api/
+backend/models/
+backend/books_data.csv

@@ -18,6 +18,12 @@ import logging
 from sqlalchemy.dialects.postgresql import JSONB
 from werkzeug.security import generate_password_hash, check_password_hash # <--- Add these imports
 import datetime
+from sqlalchemy import func # For db.func.max
+from tqdm import tqdm
+import torch
+from model_utils import load_model, CandidateGenerationModel # Assuming this import is correct
+import torch.nn.functional as F
+import difflib
 
 app = Flask(__name__)
 CORS(app)
@@ -26,6 +32,363 @@ CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:1234@localhost:5432/book'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+#device = "cpu" # Or "cuda" if available and configured
+print("Using device:", device)
+# In server.py (or app.py)
+
+# Load user/book index mappings
+try:
+    with open("models/user_book_mappings.pkl", "rb") as f:
+        mappings = pickle.load(f)
+        user2idx = mappings.get('user2idx')          # keys: original user IDs
+        book2idx = mappings.get('book2idx')          # keys: original book IDs (e.g., Goodreads IDs)
+        # --- << NEW: Create reverse mapping for index to original book ID >> ---
+        # We might need this if you want to return original IDs instead of internal indices
+        idx2book = {idx: book_id for book_id, idx in book2idx.items()}
+        # ----------------------------------------------------------------------
+
+        if user2idx is None or book2idx is None:
+            raise ValueError("Mappings file missing 'user2idx' or 'book2idx' keys.")
+        print(f"Loaded mappings for {len(user2idx)} users and {len(book2idx)} books.")
+
+except FileNotFoundError:
+    print("ERROR: Mapping file 'models/user_book_mappings.pkl' not found.")
+    exit() # Or handle more gracefully
+except Exception as e:
+    print(f"ERROR: Failed to load mappings: {e}")
+    exit()
+
+
+# --- << NEW: Load books_data.csv and create a mapping for book ID to title >> ---
+try:
+    data_books = pd.read_csv("books_data.csv")
+    book_id_to_title = dict(zip(data_books['Id'].astype(str), data_books['Title']))
+    print(f"Loaded book data for {len(book_id_to_title)} books.")
+except FileNotFoundError:
+    print("ERROR: Book data file 'books_data.csv' not found.")
+    book_id_to_title = {} # Initialize as empty if not found
+except Exception as e:
+    print(f"ERROR: Failed to load book data: {e}")
+    book_id_to_title = {} # Initialize as empty if loading fails
+# -----------------------------------------------------------------------------
+
+# Load trained model
+try:
+    num_users = len(user2idx)
+    num_books = len(book2idx)
+    if num_users == 0 or num_books == 0:
+        raise ValueError("No users or books found in mappings.")
+    # Assuming load_model takes model path, num_users, num_books
+    model = load_model("models/candidate_model.pt", num_users, num_books).to(device)
+    model.load_state_dict(torch.load('models/candidate_model.pt'), strict=False)
+    model.eval() # Set model to evaluation mode
+    print("Successfully loaded recommendation model.")
+except FileNotFoundError:
+    print("ERROR: Model file 'models/candidate_model.pt' not found.")
+    exit()
+except Exception as e:
+    print(f"ERROR: Failed to load model: {e}")
+    exit()
+
+def generate_and_save_playlist_recommendations(user_id):
+    """
+    Generates recommendations based on similarity to the user's playlist items
+    using loaded model embeddings (via title mapping), fetches details via
+    Google Books API, and saves results to the 'recommend' table.
+    Must be run within an app context (e.g., wrapped by with app.app_context()).
+    """
+    with app.app_context():
+        app.logger.info(
+            f"Generating item-based recommendations for user_id: {user_id} (using title mapping)"
+        )
+
+        # 1) Load user
+        user = db.session.get(User, user_id)
+        if not user:
+            app.logger.warning(f"User not found: {user_id}")  # Changed warn to warning
+            return {'status': 'fail', 'message': 'User not found.'}
+
+        # 2) Fetch playlist items & map titles to indices
+        try:
+            playlist_items = (
+                db.session.query(Book)
+                .join(playlist_books, Book.id == playlist_books.c.book_id)
+                .filter(playlist_books.c.user_id == user_id)
+                .order_by(playlist_books.c.position)
+                .limit(25)
+                .all()
+            )
+            playlist_google_ids = {
+                book.google_book_id
+                for book in playlist_items
+                if book.google_book_id
+            }
+
+            playlist_book_idxs = []
+            valid_playlist_titles = []
+            
+            titles = data_books['Title'].dropna().astype(str).tolist()
+            for book in playlist_items:
+                title = book.title
+                closest_match = difflib.get_close_matches(title, titles, n=1)
+                if closest_match:
+                    matched_title = closest_match[0]
+                    title = data_books.loc[data_books['Title'] == matched_title, 'Id'].values[0]
+                if title and title in book2idx:
+                    playlist_book_idxs.append(book2idx[title])
+                    valid_playlist_titles.append(title)
+                elif title:
+                    app.logger.warning(  # Changed warn to warning
+                        f"Playlist book title '{title}' not in book2idx mapping."
+                    )
+        except Exception as e:
+            app.logger.error(
+                f"Error fetching playlist/mapping for user {user_id}: {e}",
+                exc_info=True
+            )
+            return {'status': 'fail', 'message': 'Error processing user playlist.'}
+
+        if not playlist_book_idxs:
+            app.logger.info(
+                f"User {user_id} has no playlist items with titles in model mapping. Clearing recommendations."
+            )
+            try:
+                #stmt_del = recommend.delete().where(
+                #   recommend.c.user_id == user_id
+                #)
+                #db.session.execute(stmt_del)
+                #db.session.commit()
+                return {
+                    'status': 'success',
+                    'message': 'No relevant playlist items found; cleared recommendations.',
+                    'count': 0
+                }
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f"Error clearing recs: {e}")
+                return {'status': 'fail', 'message': 'Error clearing recommendations.'}
+
+        app.logger.info(
+            f"Found {len(playlist_book_idxs)} valid playlist seeds (titles) for user {user_id}: {valid_playlist_titles}"
+        )
+        
+
+        # 3) Generate recommendations using item embeddings
+        potential_recommendations = {}
+        try:
+            if model is None:
+                raise ValueError("Recommendation model is not loaded.")
+            
+            # No need to load state dict again
+            # model.load_state_dict(torch.load("models/candidate_model.pt"))
+            
+            # Generate embeddings for all books in your index
+            book_titles = [idx2book.get(idx) for idx in range(len(idx2book))]
+            
+            # Get book titles from IDs (you may need to map IDs to titles first)
+            book_titles = [book_id_to_title.get(book_id, "") for book_id in book_titles]
+            
+            # Filter out empty titles
+            valid_idx_to_title = {idx: title for idx, title in enumerate(book_titles) if title}
+            
+            # Generate embeddings
+            all_book_embeddings = {}
+            batch_size = 32  # Adjust based on your memory constraints
+            
+            for batch_start in range(0, len(valid_idx_to_title), batch_size):
+                batch_indices = list(valid_idx_to_title.keys())[batch_start:batch_start+batch_size]
+                batch_titles = [valid_idx_to_title[idx] for idx in batch_indices]
+                
+                # Generate embeddings using SentenceTransformer
+                batch_embeddings = model.encode(batch_titles, convert_to_tensor=True, device=device)
+                
+                # Store embeddings with their indices
+                for idx, embedding in zip(batch_indices, batch_embeddings):
+                    all_book_embeddings[idx] = embedding
+            
+            # Convert to tensor for similarity calculation
+            indices = list(all_book_embeddings.keys())
+            embeddings = torch.stack([all_book_embeddings[idx] for idx in indices])
+            
+            app.logger.info("Calculating similarities based on playlist item embeddings...")
+            
+            for seed_idx in playlist_book_idxs:
+                if seed_idx not in all_book_embeddings:
+                    continue
+                    
+                seed_vec = all_book_embeddings[seed_idx].unsqueeze(0)
+                # Already normalized by the model's Normalize() layer
+                
+                # Calculate similarities
+                sims = torch.matmul(seed_vec, embeddings.t()).squeeze(0)
+                
+                # take top k per seed
+                k = min(25, sims.size(0))
+                top_scores, top_idxs = torch.topk(sims, k)
+                
+                for score, tensor_idx in zip(top_scores.tolist(), top_idxs.tolist()):
+                    idx = indices[tensor_idx]
+                    if idx == seed_idx:
+                        continue
+                    gid = idx2book.get(idx)
+                    if not gid or gid in playlist_google_ids:
+                        continue
+                    prev = potential_recommendations.get(gid, 0)
+                    if score > prev:
+                        potential_recommendations[gid] = score
+                        
+            app.logger.info(
+                f"Generated {len(potential_recommendations)} unique candidates."
+            )
+        except Exception as e:
+            app.logger.error(
+                f"Error during similarity calculation: {e}",
+                exc_info=True
+            )
+            return {'status': 'fail', 'message': 'Error during model processing.'}
+
+        # 4) Sort and limit candidates
+        sorted_cands = sorted(
+            potential_recommendations.items(),
+            key=lambda item: item[1],
+            reverse=True
+        )
+        top_ids = [gid for gid, _ in sorted_cands[:10]]
+
+        if not top_ids:
+            app.logger.info(
+                f"No new recommendations found for user {user_id}. Clearing recs."
+            )
+            #stmt_del = recommend.delete().where(
+            #    recommend.c.user_id == user_id
+            #)
+            #db.session.execute(stmt_del)
+            #db.session.commit()
+            return {'status': 'success', 'message': 'No recommendations generated.', 'count': 0}
+
+        # 5) Enrich candidates with DB/Google API
+        final_recs = []
+        for gid in top_ids:
+            # Get the title from your data_books DataFrame
+            try:
+                title = data_books.loc[data_books['Id'] == gid, 'Title'].values[0]
+            except (IndexError, KeyError):
+                app.logger.warning(f"No title found for ID {gid}. Skipping.")  # Changed warn to warning
+                continue
+                
+            # First, try to find the book in the database by title or google_book_id
+            book_obj = db.session.query(Book).filter(
+                (Book.google_book_id == gid) | (Book.title.ilike(f"%{title}%"))
+            ).first()
+            
+            if book_obj:
+                final_recs.append(book_obj.to_dict())
+            else:
+                try:
+                    # Search for the book on Google Books API using the title
+                    query_params = {
+                        'q': f'intitle:{title}',
+                        'maxResults': 1
+                    }
+                    search_response = service.volumes().list(**query_params).execute()
+                    items = search_response.get('items', [])
+                    
+                    if items:
+                        item = items[0]
+                        item_gid = item.get('id')
+                        info = item.get('volumeInfo', {})
+                        sale = item.get('saleInfo', {})
+                        img = info.get('imageLinks', {})
+                        
+                        final_recs.append({
+                            'id': None,
+                            'google_book_id': item_gid or gid,  # Use the found ID or original ID
+                            'title': info.get('title', title),  # Use original title if not found
+                            'authors': ", ".join(info.get('authors', [])),
+                            'genre': (info.get('categories') or [''])[0],
+                            'synopsis': info.get('description', ''),
+                            'rating': info.get('averageRating'),
+                            'image_link': img.get('thumbnail'),
+                            'listPrice': sale.get('listPrice', {}).get('amount'),
+                            'buyLink': sale.get('buyLink')
+                        })
+                    else:
+                        app.logger.warning(f"No Google Books results found for title: {title}")  # Changed warn to warning
+                        
+                except Exception as e:
+                    app.logger.error(f"Error searching title '{title}': {e}")
+            
+            if len(final_recs) >= 20:
+                break
+        # 6) Save final recommendations
+        count = 0
+        try:
+            # First, get all existing recommendations for this user to avoid duplicates
+            # Using the SQLAlchemy execute directly with SQL expression
+            existing_recs = db.session.execute(
+                db.text("SELECT book_id FROM recommend WHERE user_id = :user_id"),
+                {"user_id": user_id}
+            ).fetchall()
+            existing_book_ids = {rec[0] for rec in existing_recs}
+            
+            # Delete existing recommendations for this user
+            #stmt_del = recommend.delete().where(
+            #    recommend.c.user_id == user_id
+            #)
+            #db.session.execute(stmt_del)
+            
+            # Track books we've already added to avoid duplicates
+            added_book_ids = set()
+            
+            for pos, rec in enumerate(final_recs, start=1):
+                gid = rec.get('google_book_id')
+                
+                # Skip items without a Google Book ID
+                if not gid:
+                    continue
+                    
+                # Check if we already have this book in the database
+                book_obj = db.session.query(Book).filter_by(
+                    google_book_id=gid
+                ).first()
+                
+                if not book_obj:
+                    # Create new Book if needed
+                    data = {
+                        'google_book_id': rec.get('google_book_id'),
+                        'title': rec.get('title'),
+                        'authors': rec.get('authors'),
+                        'genre': rec.get('genre'),
+                        'synopsis': rec.get('synopsis'),
+                        'rating': rec.get('rating'),
+                        'image_link': rec.get('image_link')
+                    }
+                    book_obj = Book(**data)
+                    db.session.add(book_obj)
+                    db.session.flush()
+                
+                # Only add if we have a valid book and haven't already added it
+                if book_obj and book_obj.id and book_obj.id not in added_book_ids:
+                    db.session.execute(
+                        recommend.insert().values(
+                            user_id=user_id,
+                            book_id=book_obj.id,
+                            position=pos
+                        )
+                    )
+                    added_book_ids.add(book_obj.id)
+                    count += 1
+                    
+            db.session.commit()
+            app.logger.info(f"Saved {count} recommendations for user {user_id}.")
+            return {'status': 'success', 'message': f'Generated & saved {count} recommendations.', 'count': count}
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Error saving recs: {e}", exc_info=True)
+            return {'status': 'fail', 'message': 'Error saving recommendations.'}
+# End of function
 
 # Association tables for liked books and playlist books
 liked_books = db.Table('liked_books',
@@ -336,10 +699,11 @@ def add_recommendations(user_id):
                             'image_link': image_url,
                             'similarity': similar.get('similarity', 0)
                         })  
-    db.session.execute(
-    recommend.delete().where(recommend.c.user_id == user_id)
-    )
-    db.session.commit()
+    #deleting books in playlist                    
+    #db.session.execute(
+    #recommend.delete().where(recommend.c.user_id == user_id)
+    #)
+    #db.session.commit()
     # For each recommended book, insert a row in the "recommend" table.
     recommendations_added = 0
     for rec in recommended_books:
@@ -396,21 +760,46 @@ def add_recommendations(user_id):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
     
-def run_background_recommendations_for_all():
+def run_background_recommendations_for_user(user_id):
+    """
+    Triggers BOTH recommendation generation functions for a single user by user_id.
+    Saves results to the 'recommend' table (likely overwriting).
+    Intended for background execution.
+    """
     with app.app_context():
         try:
-            logger.info("Starting background recommendations for all users...")
-            # Query all users; ensure your User model is imported.
-            users = User.query.all()
-            for user in users:
-                try:
-                    add_recommendations(user.id)
-                    logger.info(f"Recommendations added for user_id: {user.id}")
-                except Exception as e:
-                    logger.error(f"Error processing recommendations for user_id {user.id}: {e}")
-            logger.info("Finished background recommendations for all users.")
+            logger.info(f"Starting background recommendation generation for user_id: {user_id}")
+
+            user = db.session.query(User).filter(User.id == user_id).first()
+            if not user:
+                logger.error(f"User with id {user_id} not found.")
+                return
+
+            # --- Call First Recommendation Function ---
+            try:
+                logger.info(f" -> Calling add_recommendations for user {user.id}...")
+                result1 = add_recommendations(user.id)
+                if result1 and result1.get('status') == 'success':
+                    logger.info(f"    add_recommendations result: {result1.get('message')} (Count: {result1.get('count')})")
+                else:
+                    logger.error(f"    add_recommendations failed for user {user.id}: {result1.get('message') if result1 else 'Unknown error'}")
+            except Exception as e1:
+                logger.error(f"    Critical error calling add_recommendations for user {user.id}: {e1}", exc_info=True)
+
+            # --- Call Second Recommendation Function ---
+            try:
+                logger.info(f" -> Calling generate_and_save_playlist_recommendations for user {user.id}...")
+                #result2 = generate_and_save_playlist_recommendations(user.id, db)
+                #if result2 and result2.get('status') == 'success':
+                #   logger.info(f"    generate_... result: {result2.get('message')} (Count: {result2.get('count')})")
+                #else:
+                #    logger.error(f"    generate_... failed for user {user.id}: {result2.get('message') if result2 else 'Unknown error'}")
+            except Exception as e2:
+                logger.error(f"    Critical error calling generate_... for user {user.id}: {e2}", exc_info=True)
+
+            logger.info(f"Finished processing recommendations for user {user.id}.")
         except Exception as e:
-            logger.error(f"Error in background recommendation process: {e}")
+            logger.error(f"Error in background recommendation process for user_id {user_id}: {e}", exc_info=True)
 
 
 
@@ -852,30 +1241,47 @@ def add_playlist_book_genre(user_id):
 @app.route('/user/<int:user_id>/generate-recommendations', methods=['POST'])
 def trigger_recommendations(user_id):
     """
-    Generates recommendations based on the user's current playlist.
+    Generates and saves recommendations based on the user's current playlist.
+    Assumes you have a function:
+        generate_and_save_playlist_recommendations(user_id)
+    which returns a dict like {'status':'success', 'message':..., ...}
+    or {'status':'fail','message':...} on error.
     """
     user = User.query.get(user_id)
     if not user:
         return jsonify({'status': 'fail', 'message': 'User not found'}), 404
+    
+    result_1 = add_recommendations(user_id,db)
 
     try:
-        # Call the function that processes the playlist and adds recommendations
-        result = add_recommendations(user_id) # Assuming this function exists
+        result = generate_and_save_playlist_recommendations(user_id,db)
+        # Validate that we got a dict back
+        if not isinstance(result, dict):
+            app.logger.error(
+                f"generate_and_save_playlist_recommendations returned invalid type: {type(result)}"
+            )
+            return jsonify({
+                'status': 'fail',
+                'message': 'Internal error: invalid recommendation response.'
+            }), 500
 
-        # Optional: Check result if needed
-        # if result.get('status') != 'success':
-        #     return jsonify({'status': 'fail', 'message': 'Failed to generate recommendations'}), 500
-
-        return jsonify({
-            'status': 'success',
-            'message': 'AI recommendations generated successfully based on current playlist.'
-        })
+        # Propagate success or failure from the helper
+        if result.get('status') == 'success':
+            return jsonify(result)
+        else:
+            # Use 400 for client‐level errors, or 500 if you prefer
+            return jsonify(result), 400
 
     except Exception as e:
-        db.session.rollback() # Rollback if recommendation generation fails
-        print(f"Error generating recommendations for user {user_id}: {e}")
-        return jsonify({'status': 'fail', 'message': f'An error occurred during recommendation generation: {e}'}), 500
-
+        app.logger.error(
+            f"Unexpected error generating recommendations for user {user_id}: {e}",
+            exc_info=True
+        )
+        return jsonify({
+            'status': 'fail',
+            'message': 'An unexpected server error occurred.'
+        }), 500
+        
 # --- Endpoint 2: Clear Playlist ---
 @app.route('/user/<int:user_id>/clear-playlist', methods=['DELETE']) # Using DELETE method is conventional for clearing/deleting resources
 def clear_user_playlist(user_id):
@@ -937,9 +1343,6 @@ def add_playlist_book(user_id):
         db.session.add(book)
         db.session.commit()
         
-    bg_thread = threading.Thread(target=run_background_recommendations_for_all)
-    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
-    bg_thread.start()
     
     # Check if book is already in the playlist
     if book in user.playlist_books:
@@ -962,6 +1365,14 @@ def add_playlist_book(user_id):
     )
     db.session.execute(stmt)
     db.session.commit()
+    
+    bg_thread = threading.Thread(target=run_background_recommendations_for_user(user_id))
+    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
+    bg_thread.start()
+    
+    bg_thread = threading.Thread(target=generate_and_save_playlist_recommendations, args=(user_id,))
+    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
+    bg_thread.start()
     
     return jsonify({
         'status': 'success', 
