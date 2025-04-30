@@ -632,130 +632,131 @@ def user_info(user_id):
 
 
 def add_recommendations(user_id):
-    # Check if the user exists.
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'status': 'fail', 'message': 'User not found'}), 404
+    with app.app_context():
+        # Check if the user exists.
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'status': 'fail', 'message': 'User not found'}), 404
 
-    # Get the user's playlist items.
-    playlist_items = (
-        db.session.query(Book, playlist_books.c.position, playlist_books.c.tag)
-        .join(playlist_books, Book.id == playlist_books.c.book_id)
-        .filter(playlist_books.c.user_id == user_id)
-        .order_by(playlist_books.c.position)
-        .all()
-    )
-
-    # Build a list of book dictionaries from the playlist.
-    books_list = []
-    for book, position, tag in playlist_items:
-        book_dict = book.to_dict()
-        book_dict['position'] = position
-        book_dict['tag'] = tag
-        books_list.append(book_dict)
-
-    # Generate recommendations using your search_books function.
-    recommended_books = []
-    for book in books_list:
-        # For each book in the playlist, retrieve similar books.
-        similar_books = search_books(
-            query_title=book['title'],
-            query_authors=book['authors'],
-            query_genre=book['genre'],
-            query_synopsis=book['synopsis'],
-            top_k=5  # Adjust the number as needed.
+        # Get the user's playlist items.
+        playlist_items = (
+            db.session.query(Book, playlist_books.c.position, playlist_books.c.tag)
+            .join(playlist_books, Book.id == playlist_books.c.book_id)
+            .filter(playlist_books.c.user_id == user_id)
+            .order_by(playlist_books.c.position)
+            .all()
         )
-        for similar in similar_books:
-            sim_query = similar['title']
-            sim_response = service.volumes().list(
-                q=sim_query,
-                orderBy='relevance',
-                maxResults=1,
-            ).execute()
 
-            if 'items' in sim_response:
-                for sim_item in sim_response['items']:
-                    sim_volume_info = sim_item['volumeInfo']
-                    image_links = sim_volume_info.get('imageLinks', {})
-                    image_url = (
-                        image_links.get('extraLarge') or
-                        image_links.get('large') or
-                        image_links.get('medium') or
-                        image_links.get('thumbnail', 'N/A')
-                    )
-                    # Use the external API's id for the google_book_id.
-                    ext_book_id = sim_item.get('id')
-                    # Only add if this recommendation is not already present.
-                    if not any(r.get('google_book_id') == ext_book_id for r in recommended_books):
-                        sim_categories = sim_volume_info.get('categories', ['N/A'])
-                        sim_genre = sim_categories[0] if sim_categories else 'N/A'
-                        recommended_books.append({
-                            'google_book_id': ext_book_id,
-                            'title': sim_volume_info.get('title', 'N/A'),
-                            'authors': ', '.join(sim_volume_info.get('authors', ['N/A'])),
-                            'genre': sim_genre,
-                            'synopsis': sim_volume_info.get('description', 'N/A'),
-                            'rating': sim_volume_info.get('averageRating', 'N/A'),
-                            'image_link': image_url,
-                            'similarity': similar.get('similarity', 0)
-                        })  
-    #deleting books in playlist                    
-    #db.session.execute(
-    #recommend.delete().where(recommend.c.user_id == user_id)
-    #)
-    #db.session.commit()
-    # For each recommended book, insert a row in the "recommend" table.
-    recommendations_added = 0
-    for rec in recommended_books:
-        # Check if the book already exists in the Book table; if not, create it.
-        book_obj = Book.query.filter_by(google_book_id=rec['google_book_id']).first()
-        if not book_obj:
-            try:
-                rating_value = float(rec['rating']) if rec['rating'] not in [None, '', 'N/A'] else None
-            except (ValueError, TypeError):
-                rating_value = None
-            book_obj = Book(
-                google_book_id=rec['google_book_id'],
-                title=rec['title'],
-                authors=rec['authors'],
-                genre=rec['genre'],
-                synopsis=rec['synopsis'],
-                rating=rating_value,
-                image_link=rec['image_link']
+        # Build a list of book dictionaries from the playlist.
+        books_list = []
+        for book, position, tag in playlist_items:
+            book_dict = book.to_dict()
+            book_dict['position'] = position
+            book_dict['tag'] = tag
+            books_list.append(book_dict)
+
+        # Generate recommendations using your search_books function.
+        recommended_books = []
+        for book in books_list:
+            # For each book in the playlist, retrieve similar books.
+            similar_books = search_books(
+                query_title=book['title'],
+                query_authors=book['authors'],
+                query_genre=book['genre'],
+                query_synopsis=book['synopsis'],
+                top_k=5  # Adjust the number as needed.
             )
-            db.session.add(book_obj)
-            db.session.commit()  # Commit to generate the book_obj.id
+            for similar in similar_books:
+                sim_query = similar['title']
+                sim_response = service.volumes().list(
+                    q=sim_query,
+                    orderBy='relevance',
+                    maxResults=1,
+                ).execute()
 
-        # Check if this recommendation already exists for the user.
-        existing = db.session.execute(
-            recommend.select().where(
-                (recommend.c.user_id == user_id) &
-                (recommend.c.book_id == book_obj.id)
-            )
-        ).fetchone()
-        if existing:
-            continue
-
-        # Update the max position query - this is the correct syntax for SQLAlchemy
-        max_position_result = db.session.query(db.func.max(recommend.c.position))\
-            .filter(recommend.c.user_id == user_id).scalar()
-        next_position = 1 if max_position_result is None else max_position_result + 1
-
-        # Insert into the recommendations (recommend) table.
-        stmt = recommend.insert().values(
-            user_id=user_id,
-            book_id=book_obj.id,
-            position=next_position
+                if 'items' in sim_response:
+                    for sim_item in sim_response['items']:
+                        sim_volume_info = sim_item['volumeInfo']
+                        image_links = sim_volume_info.get('imageLinks', {})
+                        image_url = (
+                            image_links.get('extraLarge') or
+                            image_links.get('large') or
+                            image_links.get('medium') or
+                            image_links.get('thumbnail', 'N/A')
+                        )
+                        # Use the external API's id for the google_book_id.
+                        ext_book_id = sim_item.get('id')
+                        # Only add if this recommendation is not already present.
+                        if not any(r.get('google_book_id') == ext_book_id for r in recommended_books):
+                            sim_categories = sim_volume_info.get('categories', ['N/A'])
+                            sim_genre = sim_categories[0] if sim_categories else 'N/A'
+                            recommended_books.append({
+                                'google_book_id': ext_book_id,
+                                'title': sim_volume_info.get('title', 'N/A'),
+                                'authors': ', '.join(sim_volume_info.get('authors', ['N/A'])),
+                                'genre': sim_genre,
+                                'synopsis': sim_volume_info.get('description', 'N/A'),
+                                'rating': sim_volume_info.get('averageRating', 'N/A'),
+                                'image_link': image_url,
+                                'similarity': similar.get('similarity', 0)
+                            })  
+        #deleting books in playlist                    
+        db.session.execute(
+        recommend.delete().where(recommend.c.user_id == user_id)
         )
-        db.session.execute(stmt)
-        recommendations_added += 1
+        db.session.commit()
+        # For each recommended book, insert a row in the "recommend" table.
+        recommendations_added = 0
+        for rec in recommended_books:
+            # Check if the book already exists in the Book table; if not, create it.
+            book_obj = Book.query.filter_by(google_book_id=rec['google_book_id']).first()
+            if not book_obj:
+                try:
+                    rating_value = float(rec['rating']) if rec['rating'] not in [None, '', 'N/A'] else None
+                except (ValueError, TypeError):
+                    rating_value = None
+                book_obj = Book(
+                    google_book_id=rec['google_book_id'],
+                    title=rec['title'],
+                    authors=rec['authors'],
+                    genre=rec['genre'],
+                    synopsis=rec['synopsis'],
+                    rating=rating_value,
+                    image_link=rec['image_link']
+                )
+                db.session.add(book_obj)
+                db.session.commit()  # Commit to generate the book_obj.id
 
-    db.session.commit()
-    return jsonify({
-        'status': 'success',
-        'message': 'Recommendations added',
-        'count': recommendations_added
-    })
+            # Check if this recommendation already exists for the user.
+            existing = db.session.execute(
+                recommend.select().where(
+                    (recommend.c.user_id == user_id) &
+                    (recommend.c.book_id == book_obj.id)
+                )
+            ).fetchone()
+            if existing:
+                continue
+
+            # Update the max position query - this is the correct syntax for SQLAlchemy
+            max_position_result = db.session.query(db.func.max(recommend.c.position))\
+                .filter(recommend.c.user_id == user_id).scalar()
+            next_position = 1 if max_position_result is None else max_position_result + 1
+
+            # Insert into the recommendations (recommend) table.
+            stmt = recommend.insert().values(
+                user_id=user_id,
+                book_id=book_obj.id,
+                position=next_position
+            )
+            db.session.execute(stmt)
+            recommendations_added += 1
+
+        db.session.commit()
+        return jsonify({
+            'status': 'success',
+            'message': 'Recommendations added',
+            'count': recommendations_added
+        })
     
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1366,13 +1367,26 @@ def add_playlist_book(user_id):
     db.session.execute(stmt)
     db.session.commit()
     
-    bg_thread = threading.Thread(target=run_background_recommendations_for_user(user_id))
-    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
-    bg_thread.start()
-    
-    bg_thread = threading.Thread(target=generate_and_save_playlist_recommendations, args=(user_id,))
-    bg_thread.daemon = True  # Ensures this thread won't block shutdown.
-    bg_thread.start()
+    # Use a unique variable name
+    bg_thread_1 = threading.Thread(
+        target=add_recommendations,  # Pass function REFERENCE
+        args=(user_id,)             # Pass arguments as a TUPLE
+    )
+    bg_thread_1.daemon = True # Allow app to exit even if thread runs
+    bg_thread_1.start()     # Start the first thread
+
+    # --- Start Thread 2: Calling generate_and_save_playlist_recommendations ---
+    # Make sure this function is defined and takes only user_id
+    # and uses app_context INTERNALLY (as corrected before)
+    app.logger.info(f"Starting thread for generate_and_save_playlist_recommendations for user {user_id}")
+    # Use a different variable name
+    bg_thread_2 = threading.Thread(
+        target=generate_and_save_playlist_recommendations, # Pass function REFERENCE
+        args=(user_id,)                                     # Pass arguments as a TUPLE
+    )
+    bg_thread_2.daemon = True
+    bg_thread_2.start()     # Start the second thread
+
     
     return jsonify({
         'status': 'success', 
