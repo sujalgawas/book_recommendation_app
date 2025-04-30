@@ -525,13 +525,28 @@ class CachedBookDetail(db.Model):
         return f'<CachedBookDetail {self.google_book_id}: {self.title}>'
 
 
+def load_api_keys(filepath):
+    keys = {}
+    with open(filepath, 'r') as f:
+        for line in f:
+            if '=' in line:
+                key, value = line.strip().split('=', 1)
+                keys[key.strip()] = value.strip()
+    return keys
+
+# Load from file
+api_keys = load_api_keys('password.txt')
+
+gemini_key = api_keys.get('gemini_api_key')
+service_1 = api_keys.get('service_1')
+service_2 = api_keys.get('service_2')
+
 # Initialize the Books API service
-#service = build('books', 'v1', developerKey='AIzaSyCgtyM44wxtiprQtArM4CIGJk9Ap0wdk-U', cache_discovery=False)
-service = build('books', 'v1', developerKey='AIzaSyC3oAIwtxAqCKNtpXFwYUij2OIzSTz1o3s',cache_discovery=False)
+#service = build('books', 'v1', developerKey=service_1, cache_discovery=False)
+service = build('books', 'v1', developerKey=service_2,cache_discovery=False)
     
 load_dotenv() # Load environment variables from .env file
-#GEMINI_API_KEY = os.getenv("AIzaSyAWeHjTOkWRch_pVwalljS7ZVhRXsAcpVo")
-GEMINI_API_KEY = "AIzaSyAWeHjTOkWRch_pVwalljS7ZVhRXsAcpVo"
+GEMINI_API_KEY = gemini_key
 
 
 if not GEMINI_API_KEY:

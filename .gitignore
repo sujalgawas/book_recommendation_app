@@ -46,3 +46,5 @@ test.csv
 backend/book_recommender_api/
 backend/models/
 backend/books_data.csv
+backend/password.txt
+
