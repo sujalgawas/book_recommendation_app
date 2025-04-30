@@ -13,6 +13,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap/dist/js/bootstrap.bundle.min.js';
 import { AuthProvider } from './context/AuthContext';
+import GeminiChat from './components/GeminiChat';
 
 const App = () => {
   return (
@@ -31,6 +32,7 @@ const App = () => {
           } />
           <Route path="/book/:id" element={<BookPage />} />
           <Route path="/search-results" element={<SearchResultsPage />} />
+          <Route path="/ask-gemini" element={<GeminiChat />} />
         </Routes>
       </AuthProvider>
     </div>

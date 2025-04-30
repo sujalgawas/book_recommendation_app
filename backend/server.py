@@ -24,6 +24,10 @@ import torch
 from model_utils import load_model, CandidateGenerationModel # Assuming this import is correct
 import torch.nn.functional as F
 import difflib
+import os
+import google.generativeai as genai
+from dotenv import load_dotenv # If using .env file (pip install python-dotenv)
+
 
 app = Flask(__name__)
 CORS(app)
@@ -525,6 +529,123 @@ class CachedBookDetail(db.Model):
 #service = build('books', 'v1', developerKey='AIzaSyCgtyM44wxtiprQtArM4CIGJk9Ap0wdk-U', cache_discovery=False)
 service = build('books', 'v1', developerKey='AIzaSyC3oAIwtxAqCKNtpXFwYUij2OIzSTz1o3s',cache_discovery=False)
     
+load_dotenv() # Load environment variables from .env file
+#GEMINI_API_KEY = os.getenv("AIzaSyAWeHjTOkWRch_pVwalljS7ZVhRXsAcpVo")
+GEMINI_API_KEY = "AIzaSyAWeHjTOkWRch_pVwalljS7ZVhRXsAcpVo"
+
+
+if not GEMINI_API_KEY:
+    app.logger.warn("GOOGLE_API_KEY environment variable not set.")
+    # Handle missing key appropriately - maybe disable Gemini features
+else:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        app.logger.info("Gemini API Key configured.")
+    except Exception as e:
+         app.logger.error(f"Error configuring Gemini API: {e}")
+         
+@app.route('/api/user/<int:user_id>/ask_gemini', methods=['POST'])
+# @login_required # Recommended for security
+def ask_gemini_about_books(user_id):
+    # --- Basic User Check ---
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # --- Get User Query ---
+    data = request.get_json()
+    user_query = data.get('query')
+    if not user_query:
+        return jsonify({'error': 'Missing query in request body'}), 400
+
+    # --- Fetch User's Books (Example: Playlist + Liked, limit total) ---
+    books_context = []
+    try:
+        # Get Playlist Books (limit to ~15)
+        playlist_items = (
+            db.session.query(Book.title, Book.authors, Book.genre)
+            .join(playlist_books, Book.id == playlist_books.c.book_id)
+            .filter(playlist_books.c.user_id == user_id)
+            .order_by(playlist_books.c.position)
+            .limit(15).all() )
+        if playlist_items:
+             books_context.append("Playlist Books:\n" + "\n".join([f"- '{b.title}' by {b.authors or 'Unknown'} (Genre: {b.genre or 'N/A'})" for b in playlist_items]))
+
+        # Get Liked Books (limit to ~15, avoid duplicates)
+        playlist_titles = {b.title for b in playlist_items if b.title} # Titles already included
+        liked_items = (
+             db.session.query(Book.title, Book.authors, Book.genre)
+             .join(liked_books, Book.id == liked_books.c.book_id)
+             .filter(liked_books.c.user_id == user_id)
+             .filter(Book.title.notin_(playlist_titles)) # Avoid adding duplicates already listed from playlist
+             .limit(15).all() )
+        if liked_items:
+             books_context.append("Liked Books:\n" + "\n".join([f"- '{b.title}' by {b.authors or 'Unknown'} (Genre: {b.genre or 'N/A'})" for b in liked_items]))
+
+    except Exception as e:
+        app.logger.error(f"Error fetching books for Gemini context (User {user_id}): {e}")
+        return jsonify({'error': 'Could not retrieve user book data'}), 500
+
+    if not books_context:
+        context_string = "The user currently has no books listed in their playlist or liked books."
+    else:
+        context_string = "\n\n".join(books_context)
+    # --- Construct the Prompt ---
+    prompt = f"""
+    You are a helpful and intelligent book recommendation assistant.
+
+    Your goal is to recommend books based on the user's question. If the user's book list contains relevant genres or titles, you may use that as inspiration. However, if the list does not help, feel free to use your general book knowledge to answer.
+
+    User's Book List:
+    ---
+    {context_string}
+    ---
+
+    User's Question: "{user_query}"
+
+    Answer:
+    """
+
+    app.logger.info(f"Sending prompt to Gemini for user {user_id}")
+    # app.logger.debug(f"Prompt: {prompt}") # Log prompt for debugging if needed
+
+    # --- Call Gemini API ---
+    try:
+        if not GEMINI_API_KEY: # Check again if key was loaded
+             return jsonify({'error': 'Gemini API key not configured on server.'}), 500
+
+        # Choose a model (gemini-1.5-flash is often faster/cheaper for simple Q&A)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        # Or use gemini-pro for potentially more complex reasoning:
+        # model = genai.GenerativeModel('gemini-pro')
+
+        # Generate content
+        # Add safety settings if desired
+        # safety_settings=[...]
+        response = model.generate_content(prompt) #, safety_settings=safety_settings)
+
+        # Log the full response for debugging if needed
+        # app.logger.debug(f"Gemini Raw Response: {response}")
+
+        # --- Process Response ---
+        # Check for blocked content due to safety filters
+        if not response.candidates:
+             app.logger.warn(f"Gemini response for user {user_id} blocked or empty. Prompt: {prompt[:200]}...") # Log truncated prompt
+             # Check response.prompt_feedback for block reason
+             block_reason = response.prompt_feedback.block_reason if response.prompt_feedback else 'Unknown'
+             return jsonify({'answer': f"Sorry, I couldn't generate a response for that query. (Reason: {block_reason})"})
+
+        # Extract text - handle potential errors if structure is unexpected
+        generated_text = response.text
+
+        app.logger.info(f"Received Gemini response for user {user_id}")
+        return jsonify({'answer': generated_text})
+
+    except Exception as e:
+        app.logger.error(f"Error calling Gemini API for user {user_id}: {e}", exc_info=True)
+        return jsonify({'error': f'Failed to get response from AI assistant: {e}'}), 500
+
+        
 model = SentenceTransformer('all-MiniLM-L6-v2')
 index = faiss.read_index("book_index.faiss")
 metadata = pd.read_pickle("book_metadata.pkl")
@@ -761,12 +882,9 @@ def add_recommendations(user_id):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
     
+#this function is useless now wrote this for testing 
+""" 
 def run_background_recommendations_for_user(user_id):
-    """
-    Triggers BOTH recommendation generation functions for a single user by user_id.
-    Saves results to the 'recommend' table (likely overwriting).
-    Intended for background execution.
-    """
     with app.app_context():
         try:
             logger.info(f"Starting background recommendation generation for user_id: {user_id}")
@@ -801,7 +919,7 @@ def run_background_recommendations_for_user(user_id):
             logger.info(f"Finished processing recommendations for user {user.id}.")
         except Exception as e:
             logger.error(f"Error in background recommendation process for user_id {user_id}: {e}", exc_info=True)
-
+"""  
 
 
 @app.route('/search', methods=['GET'])
