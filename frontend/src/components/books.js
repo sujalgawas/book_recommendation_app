@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Trash2, Search, BookOpen, PlusCircle, CheckSquare, Square, Bookmark } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-
+import './books.css'
 // Define the tags allowed in this view's playlist section
 const ALLOWED_PLAYLIST_TAGS = ['save_later', 'completed', 'reading', 'dropped'];
 

@@ -1,123 +1,93 @@
-@import url('https://fonts.googleapis.com/css?family=Orbitron&display=swap');
-@import url('https://fonts.googleapis.com/css?family=Hind&display=swap');
+/* --- Responsive Styles for Phones Only --- */
 
-* {
-  -webkit-font-smoothing: antialiased;
-  color: #acbdce;
-}
+/* Target screens up to 768px wide (adjust breakpoint if needed) */
+@media (max-width: 768px) {
 
-:root {
-  --border-radius: 10px;
-}
-
-body, html {
-  background: #e2e9f4;
-  display: grid;
-  height: 100%;
-  grid-template: 1fr/100%;
-  place-items: center;
-}
-
-.Card {
-  padding: 1px;
-  border-radius: var(--border-radius);
-  background: linear-gradient(-67deg, rgba(#c8d8e7, .7), rgba(255,255,255,.8));
-  overflow: hidden;
-  box-shadow: 
-    -2px -2px 6px rgba(#fff, .6),
-    2px 2px 12px #c8d8e7;
-  width: 380px;
-}
-
-.CardInner {
-  padding: 16px 16px;
-  background-color: #e2e9f4;
-  border-radius: var(--border-radius);
-}
-
-.container {
-  display: flex;
-}
-
-.Icon {
-  min-width: 46px;
-  min-height: 46px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--border-radius);
-  margin-right: 12px;
-  box-shadow: 
-    -2px -2px 6px rgba(#fff, .6),
-    2px 2px 12px #c8d8e7;
-    
-  svg {
-    transform: translate(-1px, -1px);    
+  .book-playlist-container {
+    /* Stack sections vertically */
+    flex-direction: column !important;
+    /* Allow height to grow with content, ensure it fills viewport */
+    height: auto !important;
+    min-height: calc(100vh - 70px) !important; /* Adjust 70px based on your navbar */
   }
+
+  .search-section {
+    /* Take full width */
+    width: 100% !important;
+    min-width: 0 !important; /* Override inline min-width */
+    /* Remove side border, add bottom border */
+    border-right: none !important;
+    border-bottom: 1px solid #2a2a4a !important;
+    /* Limit height and prevent shrinking */
+    max-height: 45vh !important; /* Adjust Vh as needed */
+    flex-shrink: 0 !important;
+    /* Adjust padding */
+    padding: 15px !important;
+  }
+
+  .books-list {
+      /* Adjust padding when vertical */
+      padding-right: 0 !important; /* Remove right padding */
+      padding-left: 5px !important; /* Optional: add a little left padding */
+  }
+
+
+  .playlist-section {
+    /* Take full width */
+    width: 100% !important;
+    /* Adjust padding */
+    padding: 15px !important;
+    /* Ensure it can scroll if content overflows */
+    overflow-y: auto !important;
+    flex: 1 !important; /* Allow it to take remaining vertical space */
+  }
+
+  .playlist-books {
+     /* Adjust grid columns for smaller screens */
+     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important; /* Slightly smaller min width */
+     gap: 15px !important; /* Adjust gap */
+     padding-bottom: 15px !important; /* Adjust bottom padding */
+  }
+
+  /* Optional: Adjust font sizes / padding within cards for mobile */
+   .playlist-section h2 {
+      font-size: 1.5em !important;
+      margin-bottom: 15px !important;
+      padding-bottom: 10px !important;
+   }
+   .tag-filters {
+      margin-bottom: 15px !important;
+      padding: 10px !important;
+      gap: 8px !important;
+   }
+    .tag-filters button {
+       padding: 6px 12px !important;
+       font-size: 0.9em !important;
+    }
+
+    /* Example adjustments for playlist card on mobile */
+    .playlist-books > div { /* Target playlist book card */
+       padding: 15px !important;
+       min-height: auto !important; /* Let content define height */
+    }
+    .playlist-books > div img { /* Target playlist book image */
+       width: 80px !important;
+       height: 120px !important;
+    }
+     .playlist-books > div h3 { /* Target playlist book title */
+        font-size: 1.1em !important; /* Slightly adjust font size */
+     }
+      .playlist-books > div .book-actions button { /* Target action buttons */
+        padding: 4px 8px !important;
+        font-size: 0.75em !important;
+        gap: 4px !important;
+      }
+      .playlist-books > div .book-actions button svg { /* Target icons in buttons */
+         width: 12px !important;
+         height: 12px !important;
+       }
+
 }
 
-label {
-  font-family: "Hind", sans-serif;
-  display: block;
-  color: #3c4b66;
-  margin-bottom: 12px;
-  background: linear-gradient(45deg, rgba(#6b7b8f, 1), #3c4b66);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.InputContainer {
-  width: 100%;
-}
-
-input {
-  background-color: #e3edf7;
-  padding: 16px 32px;
-  border: none;
-  display: block;
-  font-family: 'Orbitron', sans-serif;
-  font-weight: 600;
-  color: #a9b8c9;
-  -webkit-appearance: none;
-  transition: all 240ms ease-out;
-  width: 100%;
-  
-  &::placeholder {
-    color: #6d7f8f;
-  }
-  
-  &:focus {
-    outline: none;
-    color: #6d7f8f;
-    background-color: lighten(#e3edf7, 3%);
-  }
-};
-  
-.InputContainer {
-  --top-shadow: inset 1px 1px 3px #c5d4e3, inset 2px 2px 6px #c5d4e3;
-  --bottom-shadow: inset -2px -2px 4px rgba(255,255,255, .7);
-  
-  position: relative;
-  border-radius: var(--border-radius);
-  overflow: hidden;
-  
-  &:before,
-  &:after {
-    left: 0;
-    top: 0;
-    display: block;
-    content: "";
-    pointer-events: none;
-    width: 100%;
-    height: 100%;
-    position: absolute;
-  }
-  
-  &:before {
-    box-shadow: var(--bottom-shadow);
-  }
-  
-  &:after {
-    box-shadow: var(--top-shadow);
-  }
-}
+/* Keep the rest of your original CSS file */
+/* ... (like @import, body, html, .Card, .InputContainer etc.) ... */
