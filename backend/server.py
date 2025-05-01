@@ -734,37 +734,59 @@ def data(num_results=10):
 
 @app.route('/user/<int:user_id>/info', methods=['GET'])
 def user_info(user_id):
-    # Get the user's recommendations sorted by position
-    recommendation_items = db.session.query(Book, recommend.c.position)\
-        .join(recommend, Book.id == recommend.c.book_id)\
-        .filter(recommend.c.user_id == user_id)\
-        .order_by(recommend.c.position).all()
-    
-    books_list = []
-    for book, position in recommendation_items:
-        # Create a dictionary with the same structure expected by the frontend
-        books_list.append({
-            'id': book.google_book_id,  # Frontend uses book.id in some places
-            'google_book_id': book.google_book_id,  # Used by the frontend for identification
-            'title': book.title or 'N/A',
-            'authors': book.authors or 'N/A',
-            'genre': book.genre or 'N/A',
-            'synopsis': book.synopsis or 'N/A',
-            'rating': book.rating if book.rating is not None else 'N/A',
-            'image_link': book.image_link or 'N/A',
-            'position': position,
-            'tag': 'recommend'  # Adding tag for frontend identification
-        })
-    
-    # If there are more than 10 recommendations, pick 10 random ones;
-    # otherwise, just use the entire list.
-    if len(books_list) > 30:
-        random_books = random.sample(books_list, 30)
-    else:
-        random_books = books_list
-    
-    # Return the result as JSON
-    return jsonify(random_books)
+    """Fetches stored recommendations for a user, excluding books without image links."""
+    app.logger.info(f"Fetching recommendations for user_id: {user_id}")
+    try:
+        # Get the user's recommendations sorted by position
+        recommendation_items = db.session.query(Book, recommend.c.position)\
+            .join(recommend, Book.id == recommend.c.book_id)\
+            .filter(recommend.c.user_id == user_id)\
+            .order_by(recommend.c.position).all()
+
+        books_list = []
+        skipped_count = 0
+        for book, position in recommendation_items:
+            # --- << ADD CHECK FOR image_link >> ---
+            # Check if image_link exists (is not None, not empty string)
+            # AND explicitly check it's not the placeholder string 'N/A' if that might be stored
+            if book.image_link and book.image_link != 'N/A':
+                # If image link is valid, create and append the dictionary
+                books_list.append({
+                    'id': book.google_book_id,
+                    'google_book_id': book.google_book_id,
+                    'title': book.title or 'N/A',
+                    'authors': book.authors or 'N/A',
+                    'genre': book.genre or 'N/A',
+                    'synopsis': book.synopsis or 'N/A',
+                    'rating': book.rating if book.rating is not None else 'N/A',
+                    'image_link': book.image_link, # Use the valid link
+                    'position': position,
+                    'tag': 'recommend'
+                })
+            else:
+                # Optional: Log skipped books for debugging
+                skipped_count += 1
+                app.logger.debug(f"Skipping book recommendation (User: {user_id}, Title: {book.title}) due to missing/invalid image_link: {book.image_link}")
+            # --- << END CHECK >> ---
+
+        if skipped_count > 0:
+             app.logger.info(f"Skipped {skipped_count} recommendations for user {user_id} due to missing image links.")
+
+        # Random sampling logic (remains the same)
+        if len(books_list) > 30:
+            app.logger.info(f"Returning 30 random samples from {len(books_list)} valid recommendations for user {user_id}.")
+            final_books_list = random.sample(books_list, 30)
+        else:
+            app.logger.info(f"Returning all {len(books_list)} valid recommendations for user {user_id}.")
+            final_books_list = books_list
+
+        # Return the filtered result as JSON
+        return jsonify(final_books_list)
+
+    except Exception as e:
+        app.logger.error(f"Error fetching recommendations for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not fetch recommendations"}), 500
+
 
 
 def add_recommendations(user_id):
