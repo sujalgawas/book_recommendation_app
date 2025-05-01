@@ -1,17 +1,23 @@
 // src/components/BookPage.js
 
-import React, { useState, useEffect, useCallback } from 'react'; // Added useCallback
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Heart, ListPlus, ArrowLeft, Star, BookOpen, CheckSquare, Square, Bookmark, Trash2 } from 'lucide-react';
+import { Heart, ListPlus, ArrowLeft, Star, BookOpen, CheckSquare, Square, Bookmark, Trash2, MessageSquare, ExternalLink, Loader2, AlertTriangle } from 'lucide-react'; // Added icons
 import axios from 'axios';
-// Import CSS
-import './BookPage.css';
+import './BookPage.css'; // Make sure to add styles for Reddit section
 
-// Configure axios instance (optional but recommended)
+// Configure axios instance
 const apiClient = axios.create({
     baseURL: 'http://localhost:5000', // Your Flask backend URL
     withCredentials: true,
 });
+
+// Helper function to format Reddit timestamps
+const formatTimestamp = (utcTimestamp) => {
+    if (!utcTimestamp) return 'Unknown date';
+    const date = new Date(utcTimestamp * 1000); // Convert seconds to milliseconds
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+};
 
 
 const BookPage = () => {
@@ -26,8 +32,13 @@ const BookPage = () => {
     const [isSyncing, setIsSyncing] = useState(false); // Specific state for sync operation
     const [error, setError] = useState(null);
 
-    // --- getUserId ---
-    const getUserId = useCallback(() => { // Wrap in useCallback
+    // --- State for Reddit Reviews ---
+    const [redditReviews, setRedditReviews] = useState([]);
+    const [isLoadingReddit, setIsLoadingReddit] = useState(false);
+    const [redditError, setRedditError] = useState(null);
+    // -------------------------------
+
+    const getUserId = useCallback(() => {
         try {
             const userString = localStorage.getItem('user');
             if (!userString) return null;
@@ -37,66 +48,96 @@ const BookPage = () => {
             console.error("Error parsing user from localStorage", e);
             return null;
         }
-    }, []); // Empty dependency array means it's created once
+    }, []);
 
-    // --- Fetch Data Logic ---
     const fetchBookFromDb = useCallback(async (bookId) => {
         console.log(`Attempting to fetch book ${bookId} from local DB...`);
         try {
-            // Use GET request to fetch from DB via backend
             const response = await apiClient.get(`/api/book/${bookId}`);
             console.log("Fetched Book Data from DB:", response.data);
-            setBook(response.data); // Set book data from local DB
-            setError(null); // Clear previous errors
-            return true; // Indicate success
+            setBook(response.data);
+            setError(null);
+            return true;
         } catch (err) {
             if (err.response && err.response.status === 404) {
                 console.log(`Book ${bookId} not found in local DB.`);
-                // Book not found, normal case for first view, return false
                 return false;
             } else {
-                // Other error fetching from DB
                 console.error('Error fetching book details from DB:', err.response || err);
                 setError(err.response?.data?.error || err.message || 'Failed to fetch book details from database.');
-                throw err; // Re-throw other errors to stop the process
+                throw err;
             }
         }
-    }, []); // Empty dependency array
+    }, []);
 
     const syncAndRefetchBook = useCallback(async (bookId) => {
         console.log(`Book ${bookId} not in DB, triggering API sync...`);
-        setIsSyncing(true); // Show syncing indicator
+        setIsSyncing(true);
         setError(null);
         try {
-            // Call the new POST endpoint to fetch from API and save to DB
             const syncResponse = await apiClient.post(`/api/book/${bookId}/sync`);
             console.log("Sync API Response:", syncResponse.data);
-            if (syncResponse.data.status !== 'success') {
-                throw new Error(syncResponse.data.error || syncResponse.data.message || 'Failed to sync book details from API.');
+            if (syncResponse.data.status !== 'success' && !syncResponse.data.book) { // Check if sync failed AND didn't return book data
+                 throw new Error(syncResponse.data.error || syncResponse.data.message || 'Failed to sync book details from API.');
             }
-            // If sync succeeded, fetch the newly saved data from DB
-            await fetchBookFromDb(bookId); // This will set the book state on success
+             // If sync succeeded OR returned book data directly, fetch/set it
+            if (syncResponse.data.book) {
+                console.log("Sync returned book data directly, using it.");
+                setBook(syncResponse.data.book); // Use data returned by sync if available
+                setError(null); // Clear error if sync returned data
+            } else {
+                // If sync didn't return data directly, refetch from DB
+                await fetchBookFromDb(bookId);
+            }
 
         } catch (err) {
             console.error('Error during sync or re-fetch:', err);
             setError(err.response?.data?.error || err.message || 'Failed to sync and retrieve book details.');
-            // Keep book state as null if sync/refetch fails
             setBook(null);
         } finally {
-            setIsSyncing(false); // Hide syncing indicator
+            setIsSyncing(false);
         }
-    }, [fetchBookFromDb]); // Depends on fetchBookFromDb
+    }, [fetchBookFromDb]);
+
+    // --- Function to fetch Reddit Reviews ---
+    const fetchRedditReviews = useCallback(async (title) => {
+        if (!title) return; // Don't fetch if title is missing
+
+        console.log(`Fetching Reddit reviews for: ${title}`);
+        setIsLoadingReddit(true);
+        setRedditError(null);
+        setRedditReviews([]); // Clear previous reviews
+
+        try {
+            // Encode the title for the URL query parameter
+            const encodedTitle = encodeURIComponent(title);
+            const response = await apiClient.get(`/api/reddit-reviews?title=${encodedTitle}`);
+            console.log("Reddit API Response:", response.data);
+            setRedditReviews(Array.isArray(response.data) ? response.data : []);
+        } catch (err) {
+            console.error('Error fetching Reddit reviews:', err.response || err);
+            setRedditError(err.response?.data?.error || err.message || 'Failed to load Reddit discussions.');
+            setRedditReviews([]); // Ensure it's an empty array on error
+        } finally {
+            setIsLoadingReddit(false);
+        }
+    }, []); // No dependencies needed as title is passed directly
 
     // --- Main useEffect for Loading Data ---
     useEffect(() => {
         const loadData = async () => {
-            setIsLoading(true); // Start overall loading
-            setBook(null); // Reset state
+            setIsLoading(true);
+            setBook(null);
             setError(null);
             setSimilarBooks([]);
             setIsLiked(false);
             setIsInPlaylist(false);
             setCurrentTag('save_later');
+            // Reset Reddit state too
+            setRedditReviews([]);
+            setRedditError(null);
+            setIsLoadingReddit(false);
+
 
             if (!id) {
                 setError("No book ID provided in URL.");
@@ -105,45 +146,38 @@ const BookPage = () => {
             }
 
             try {
-                // 1. Try fetching from local DB first
                 const foundInDb = await fetchBookFromDb(id);
-
-                // 2. If not found in DB, trigger sync and re-fetch
                 if (!foundInDb) {
                     await syncAndRefetchBook(id);
                     // fetchBookFromDb inside syncAndRefetchBook handles setting the state
+                    // OR syncAndRefetchBook sets state directly if sync returns data
                 }
-                // If foundInDb was true, book state is already set by fetchBookFromDb
-
-                // 3. Fetch user-specific data and similar books only AFTER main book data is potentially loaded
-                // We need to access the 'book' state here, which might have just been set
-                // Use a slight delay or check if book state is set before proceeding? Let's check state.
+                 // Note: User data and similar books are fetched in the next effect
+                 // Reddit reviews will also be fetched in the next effect based on the book title
 
             } catch (err) {
-                // Errors from fetchBookFromDb (other than 404) or syncAndRefetchBook are caught here
                 console.error("Main useEffect error:", err);
-                // Error state is already set within the functions
+                // Error state is set within the functions
             } finally {
-                setIsLoading(false); // End overall loading
+                setIsLoading(false);
             }
         };
-
         loadData();
-    }, [id, fetchBookFromDb, syncAndRefetchBook]); // Dependencies
+    }, [id, fetchBookFromDb, syncAndRefetchBook]);
 
-    // --- useEffect for Secondary Data (Similar Books, User Data) ---
-    // Runs AFTER the main book data is loaded into the 'book' state
+    // --- useEffect for Secondary Data (Similar Books, User Data, REDDIT REVIEWS) ---
     useEffect(() => {
         const fetchSecondaryData = async () => {
             if (!book || !book.google_book_id) return; // Only run if book data is available
 
             const userId = getUserId();
             const bookId = book.google_book_id;
+            const bookTitle = book.title; // Get title for Reddit fetch
 
-            // Fetch similar books
+            // Fetch similar books (existing logic)
             if (book.genre && book.genre !== 'N/A') {
                 try {
-                    console.log(`Workspaceing similar books for genre: ${book.genre}`);
+                    console.log(`Fetching similar books for genre: ${book.genre}`);
                     const similarResponse = await apiClient.get(`/search?query=subject:${encodeURIComponent(book.genre)}&num_results=5`);
                     if (similarResponse.data) {
                         setSimilarBooks(
@@ -155,9 +189,9 @@ const BookPage = () => {
                 } catch (similarErr) { console.warn("Could not fetch similar books:", similarErr); }
             }
 
-            // Fetch user-specific data
+            // Fetch user-specific data (existing logic)
             if (userId) {
-                console.log(`Workspaceing user (${userId}) data for book ${bookId}...`);
+                console.log(`Fetching user (${userId}) data for book ${bookId}...`);
                 try { // Liked Status
                     const likedResponse = await apiClient.get(`/user/${userId}/liked`);
                     if (likedResponse.data) {
@@ -174,44 +208,50 @@ const BookPage = () => {
                             setCurrentTag(playlistBook.tag || 'save_later');
                         } else {
                             setIsInPlaylist(false);
-                            setCurrentTag('save_later'); // Reset tag if not in playlist
+                            setCurrentTag('save_later');
                         }
                     }
                 } catch (playlistErr) { console.warn("Could not fetch playlist status", playlistErr); }
             }
+
+            // --- Fetch Reddit Reviews ---
+            if (bookTitle) {
+                fetchRedditReviews(bookTitle); // Call the function to fetch reddit reviews
+            }
+            // --------------------------
         };
 
         fetchSecondaryData();
-    }, [book, getUserId]); // Run this effect when the main 'book' state changes
+    // Add fetchRedditReviews to dependency array
+    }, [book, getUserId, fetchRedditReviews]);
 
 
-    // --- Action Handlers (toggleLike, updatePlaylistTag, togglePlaylist - Adapt to use apiClient) ---
-    const toggleLike = useCallback(async () => { // Wrapped in useCallback
+    // --- Action Handlers (toggleLike, updatePlaylistTag, togglePlaylist - No changes needed here) ---
+     const toggleLike = useCallback(async () => {
         const userId = getUserId();
         if (!userId || !book?.google_book_id) return;
         const bookId = book.google_book_id;
         const method = isLiked ? 'DELETE' : 'POST';
-        const url = isLiked ? `/user/<span class="math-inline">\{userId\}/liked/</span>{bookId}` : `/user/${userId}/liked`; // Adjust URL for DELETE
-        const originalIsLiked = isLiked; // For rollback
+        const url = isLiked ? `/user/${userId}/liked/${bookId}` : `/user/${userId}/liked`;
+        const originalIsLiked = isLiked;
 
         setIsLiked(!isLiked); // Optimistic Update
 
         try {
             const options = { method: method };
             if (method === 'POST') {
-                options.data = book; // Send full book data if needed by backend to create entry
-                // apiClient automatically sets Content-Type for objects
+                options.data = book;
             }
-            await apiClient(url, options); // Use apiClient
+            await apiClient(url, options);
             console.log("Like toggled successfully");
         } catch (error) {
             setIsLiked(originalIsLiked); // Rollback
             console.error('Error toggling like:', error.response || error);
             alert(`Failed to ${originalIsLiked ? 'unlike' : 'like'} book: ${error.response?.data?.message || error.message}`);
         }
-    }, [isLiked, book, getUserId]); // Dependencies
+    }, [isLiked, book, getUserId]);
 
-    const updatePlaylistTag = useCallback(async (newTag) => { // Wrapped in useCallback
+    const updatePlaylistTag = useCallback(async (newTag) => {
         const userId = getUserId();
         if (!userId || !book?.google_book_id) return;
         const bookId = book.google_book_id;
@@ -229,64 +269,70 @@ const BookPage = () => {
             console.error('Error updating tag:', error.response || error);
             alert(`Failed to update tag: ${error.response?.data?.message || error.message}`);
         }
-    }, [currentTag, book, getUserId]); // Dependencies
+    }, [currentTag, book, getUserId]);
 
-    const togglePlaylist = useCallback(async () => { // Wrapped in useCallback
+    const togglePlaylist = useCallback(async () => {
         const userId = getUserId();
         if (!userId || !book?.google_book_id) return;
         const bookId = book.google_book_id;
         const method = isInPlaylist ? 'DELETE' : 'POST';
-        const url = isInPlaylist ? `/user/<span class="math-inline">\{userId\}/playlist/</span>{bookId}` : `/user/${userId}/playlist`;
+        const url = isInPlaylist ? `/user/${userId}/playlist/${bookId}` : `/user/${userId}/playlist`;
         const originalIsInPlaylist = isInPlaylist;
         const originalTag = currentTag;
 
-        // Optimistic Update
         setIsInPlaylist(!isInPlaylist);
-        if (!isInPlaylist) setCurrentTag('save_later');
+        if (!isInPlaylist) setCurrentTag('save_later'); // Reset tag when removing
 
         try {
             const options = { method: method };
             if (method === 'POST') {
-                options.data = { ...book, tag: 'save_later' }; // Send book data for POST
+                options.data = { ...book, tag: 'save_later' };
             }
-            await apiClient(url, options); // Use apiClient
+            await apiClient(url, options);
             console.log(`Successfully toggled playlist`);
+             // If removing, reset tag state explicitly AFTER successful API call
+            if (method === 'DELETE') {
+                 setCurrentTag('save_later');
+            }
         } catch (error) {
-            // Rollback
             setIsInPlaylist(originalIsInPlaylist);
-            if (!originalIsInPlaylist) setCurrentTag(originalTag);
+            setCurrentTag(originalTag); // Rollback tag as well
             console.error('Error toggling playlist:', error.response || error);
             alert(`Failed to toggle playlist: ${error.response?.data?.message || error.message}`);
         }
-    }, [isInPlaylist, currentTag, book, getUserId]); // Dependencies
+    }, [isInPlaylist, currentTag, book, getUserId]);
 
 
     // --- Render Logic ---
 
-    // Combined Loading State
     if (isLoading || isSyncing) {
         return (
             <div className="book-page loading-container">
                 <div className="loading-indicator">
-                    {isSyncing ? 'Syncing latest book details...' : 'Loading...'}
+                    <Loader2 className="animate-spin" size={24} />
+                    {isSyncing ? 'Syncing latest book details...' : 'Loading book details...'}
                 </div>
             </div>
         );
     }
 
-    if (error) { // Display error message
+    if (error) {
         return (
             <div className="book-page error-container">
-                <h2 className="error-message">Error: {error}</h2>
+                 <AlertTriangle size={40} className="error-icon" />
+                <h2 className="error-message">Error Loading Book</h2>
+                <p className="error-details">{error}</p>
                 <button className="home-button" onClick={() => navigate('/')}> Go Home </button>
             </div>
         );
     }
 
-    if (!book) { // Handle case where book is null after loading/syncing
+    if (!book) {
         return (
             <div className="book-page not-found-container">
+                 <AlertTriangle size={40} className="error-icon" />
                 <h2 className="not-found-message">Book information could not be loaded.</h2>
+                <p className="error-details">The book might not exist or there was an issue retrieving its details.</p>
                 <button className="home-button" onClick={() => navigate('/')}> Go Home </button>
             </div>
         );
@@ -302,7 +348,12 @@ const BookPage = () => {
                 <div className="book-main-layout">
                     {/* Column 1: Image & Actions */}
                     <div className="column-image-actions">
-                        <img src={book.image_link || 'https://via.placeholder.com/300x450.png?text=No+Image'} alt={`${book.title || 'Book'} cover`} className="book-image" />
+                        <img
+                            src={book.image_link || 'https://placehold.co/300x450/eeeeee/cccccc?text=No+Image'}
+                            alt={`${book.title || 'Book'} cover`}
+                            className="book-image"
+                            onError={(e) => { e.target.onerror = null; e.target.src='https://placehold.co/300x450/eeeeee/cccccc?text=No+Image'; }} // Placeholder on error
+                         />
                         <div className="actions-container">
                             <button onClick={toggleLike} className={`action-button ${isLiked ? 'liked' : ''}`} > <Heart fill={isLiked ? 'currentColor' : 'none'} size={18} /> {isLiked ? 'Unlike' : 'Like'} </button>
                             {!isInPlaylist && (<button onClick={togglePlaylist} className="action-button add-playlist" > <ListPlus size={18} /> Add to Playlist </button>)}
@@ -325,17 +376,71 @@ const BookPage = () => {
                     <div className="column-details">
                         <h1 className="book-title">{book.title || 'Title Not Available'}</h1>
                         <p className="book-authors">by {book.authors || 'Unknown Author'}</p>
-                        <div className="rating-container"> <Star fill={book.rating ? "#FFD700" : "none"} stroke={book.rating ? "#FFD700" : "#ccc"} /> <span style={{ marginLeft: '5px' }}> {typeof book.rating === 'number' ? `${book.rating.toFixed(1)} / 5` : 'No rating'} </span> </div>
+                        <div className="rating-container">
+                             <Star fill={book.rating ? "#FFD700" : "none"} stroke={book.rating ? "#FFD700" : "#ccc"} size={20}/>
+                             <span className="rating-text">
+                                {typeof book.rating === 'number' ? `${book.rating.toFixed(1)} / 5` : 'No Google rating'}
+                                {book.ratings_count ? ` (${book.ratings_count} ratings)` : ''}
+                             </span>
+                        </div>
                         {book.genre && book.genre !== 'N/A' && (<p className="genre-text">Genre: {book.genre}</p>)}
 
-                        {book.synopsis && book.synopsis !== 'N/A' && (<div> <h2 className="section-title">Synopsis</h2> <p className="synopsis-text"> {book.synopsis} </p> </div>)}
+                        {book.synopsis && book.synopsis !== 'N/A' && (
+                            <div className="synopsis-section">
+                                <h2 className="section-title">Synopsis</h2>
+                                <p className="synopsis-text"> {book.synopsis} </p>
+                            </div>
+                        )}
+
+                        {/* --- Reddit Reviews Section --- */}
+                        <div className="reddit-reviews-section">
+                            <h2 className="section-title">Reddit Discussions</h2>
+                            {isLoadingReddit && (
+                                <div className="loading-indicator small-loader">
+                                     <Loader2 className="animate-spin" size={20} /> Loading Reddit posts...
+                                 </div>
+                            )}
+                            {redditError && (
+                                 <div className="error-message small-error">
+                                     <AlertTriangle size={18} /> {redditError}
+                                 </div>
+                            )}
+                            {!isLoadingReddit && !redditError && redditReviews.length === 0 && (
+                                <p className="no-results-message">No relevant discussions found on Reddit.</p>
+                            )}
+                            {!isLoadingReddit && !redditError && redditReviews.length > 0 && (
+                                <ul className="reddit-reviews-list">
+                                    {redditReviews.map((review, index) => (
+                                        <li key={index} className="reddit-review-item">
+                                            <div className="review-header">
+                                                <span className="review-subreddit">r/{review.subreddit}</span>
+                                                <span className="review-score">Score: {review.score}</span>
+                                                <span className="review-date">{formatTimestamp(review.created_utc)}</span>
+                                            </div>
+                                            <a href={review.url} target="_blank" rel="noopener noreferrer" className="review-title-link">
+                                                {review.title} <ExternalLink size={14} className="external-link-icon"/>
+                                            </a>
+                                            <p className="review-snippet">{review.body_snippet}</p>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                        {/* ----------------------------- */}
+
+
                         {similarBooks.length > 0 && (
-                            <div>
+                            <div className="similar-books-section">
                                 <h2 className="section-title">Similar Books</h2>
                                 <div className="similar-books-grid">
                                     {similarBooks.map((similarBook) => (
                                         <div key={similarBook.google_book_id} className="similar-book-card" onClick={() => navigate(`/book/${similarBook.google_book_id}`)} title={similarBook.title} >
-                                            <img src={similarBook.image_link || 'https://via.placeholder.com/150x220.png?text=No+Image'} alt={similarBook.title} className="similar-book-image" />
+                                            <img
+                                                src={similarBook.image_link || 'https://placehold.co/150x220/eeeeee/cccccc?text=No+Image'}
+                                                alt={similarBook.title}
+                                                className="similar-book-image"
+                                                onError={(e) => { e.target.onerror = null; e.target.src='https://placehold.co/150x220/eeeeee/cccccc?text=No+Image'; }}
+                                            />
                                             <p className="similar-book-title">{similarBook.title}</p>
                                         </div>
                                     ))}

@@ -1,148 +1,142 @@
-# server.py (or app.py)
+import praw
+import os # Optional: For loading credentials from environment variables
 
-from flask import Flask, jsonify
-import torch
-import pickle
-import random
-import pandas as pd  # Import pandas to read the CSV
-from model_utils import load_model, CandidateGenerationModel # Assuming this import is correct
-import logging
+# --- Reddit API Credentials ---
+# IMPORTANT: Replace these with your actual credentials!
+# It's recommended to use environment variables or a config file
+# instead of hardcoding them directly in the script for security.
+REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "p-0U8U54KenxMDZAGyuE2w") # Replace with your client ID
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "u1TyCeDKIEm05YusVWLj-FQr5RdkXw") # Replace with your client secret
+REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "script:my-book-review-app:v1.0 (by /u/your_username)") # Replace with your user agent
 
-# Device setup
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = "cpu"
-print("Using device:", device)
+# --- Configuration ---
+# Subreddits to search within (add more relevant ones if needed)
+DEFAULT_SUBREDDITS = [
+    'books',
+    'literature',
+    'suggestmeabook',
+    'booksuggestions',
+    'Fantasy',
+    'SciFi',
+    'freeEbooks',
+    '52book',
+    'whatsthatbook',
+    'bookshelf',
+    'Outlander',
+    'YAlit',
+    'bookexchange',
+]
 
-print(torch.__version__) 
-print("CUDA available:", torch.cuda.is_available())
-print("CUDA devices:", torch.cuda.device_count())
-if torch.cuda.is_available():
-    print("Current device:", torch.cuda.current_device(),
-          "| Name:", torch.cuda.get_device_name(0))
+# Maximum number of posts to fetch per subreddit
+LIMIT_PER_SUBREDDIT = 10
 
-# Load user/book index mappings
-try:
-    with open("models/user_book_mappings.pkl", "rb") as f:
-        mappings = pickle.load(f)
-        user2idx = mappings.get('user2idx')          # keys: original user IDs
-        book2idx = mappings.get('book2idx')          # keys: original book IDs (e.g., Goodreads IDs)
-        # --- << NEW: Create reverse mapping for index to original book ID >> ---
-        # We might need this if you want to return original IDs instead of internal indices
-        idx2book = {idx: book_id for book_id, idx in book2idx.items()}
-        # ----------------------------------------------------------------------
+def get_reddit_reviews(book_title, subreddits=None, limit=LIMIT_PER_SUBREDDIT):
+    """
+    Searches specified Reddit subreddits for posts discussing a book title.
 
-        if user2idx is None or book2idx is None:
-            raise ValueError("Mappings file missing 'user2idx' or 'book2idx' keys.")
-        print(f"Loaded mappings for {len(user2idx)} users and {len(book2idx)} books.")
+    Args:
+        book_title (str): The title of the book to search for.
+        subreddits (list, optional): A list of subreddit names to search within.
+                                     Defaults to DEFAULT_SUBREDDITS.
+        limit (int, optional): The maximum number of posts to retrieve per subreddit.
+                               Defaults to LIMIT_PER_SUBREDDIT.
 
-except FileNotFoundError:
-    print("ERROR: Mapping file 'models/user_book_mappings.pkl' not found.")
-    exit() # Or handle more gracefully
-except Exception as e:
-    print(f"ERROR: Failed to load mappings: {e}")
-    exit()
+    Returns:
+        list: A list of dictionaries, where each dictionary contains information
+              about a relevant Reddit post (title, score, url, subreddit).
+              Returns an empty list if an error occurs or no posts are found.
+    """
+    if subreddits is None:
+        subreddits = DEFAULT_SUBREDDITS
 
+    reviews = []
 
-# --- << NEW: Load books_data.csv and create a mapping for book ID to title >> ---
-try:
-    data_books = pd.read_csv("books_data.csv")
-    book_id_to_title = dict(zip(data_books['Id'].astype(str), data_books['Title']))
-    print(f"Loaded book data for {len(book_id_to_title)} books.")
-except FileNotFoundError:
-    print("ERROR: Book data file 'books_data.csv' not found.")
-    book_id_to_title = {} # Initialize as empty if not found
-except Exception as e:
-    print(f"ERROR: Failed to load book data: {e}")
-    book_id_to_title = {} # Initialize as empty if loading fails
-# -----------------------------------------------------------------------------
+    # Check if credentials are placeholders
+    if REDDIT_CLIENT_ID == "YOUR_CLIENT_ID" or REDDIT_CLIENT_SECRET == "YOUR_CLIENT_SECRET":
+        print("ERROR: Please replace placeholder Reddit API credentials.")
+        return reviews
 
-# Load trained model
-try:
-    num_users = len(user2idx)
-    num_books = len(book2idx)
-    if num_users == 0 or num_books == 0:
-        raise ValueError("No users or books found in mappings.")
-    # Assuming load_model takes model path, num_users, num_books
-    model = load_model("models/candidate_model.pt", num_users, num_books).to(device)
-    model.eval() # Set model to evaluation mode
-    print("Successfully loaded recommendation model.")
-except FileNotFoundError:
-    print("ERROR: Model file 'models/candidate_model.pt' not found.")
-    exit()
-except Exception as e:
-    print(f"ERROR: Failed to load model: {e}")
-    exit()
-
-
-app = Flask(__name__)
-
-@app.route("/recommend", methods=["GET"])
-def recommend():
-    # --- Select a random user (or get from request args later) ---
-    # Ensure user2idx is not empty
-    if not user2idx:
-        return jsonify({"error": "User mapping is empty."}), 500
-    user_id = random.choice(list(user2idx.keys()))
-    user_idx_tensor = torch.tensor([user2idx[user_id]], dtype=torch.long).to(device)
-    print(f"Generating recommendations for random user: {user_id} (index: {user_idx_tensor.item()})")
-
-    scores_with_indices = []
-    # --- Iterate through all known book *indices* ---
-    all_book_indices = list(book2idx.values()) # Get all possible internal indices
-    if not all_book_indices:
-        return jsonify({"error": "Book mapping is empty."}), 500
-
-    # Create a tensor of all book indices for potentially faster batch processing if model supports it
-    # If model only supports one book at a time, keep the loop
-    all_book_indices_tensor = torch.tensor(all_book_indices, dtype=torch.long).to(device)
-
-    # --- Score books ---
     try:
-        with torch.no_grad(): # Disable gradient calculation for inference
-            # --- << METHOD 1: Batch Scoring (if model supports broadcasting user_idx) >> ---
-            # This is generally much faster if possible
-            # scores_tensor = model(user_idx_tensor.expand_as(all_book_indices_tensor), all_book_indices_tensor)
-            # scores = scores_tensor.cpu().numpy() # Get scores as numpy array
-            # scores_with_indices = list(zip(all_book_indices, scores))
-            # -----------------------------------------------------------------------------
+        # Initialize PRAW (read-only instance is sufficient for searching)
+        reddit = praw.Reddit(
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_CLIENT_SECRET,
+            user_agent=REDDIT_USER_AGENT,
+        )
+        # Verify read-only status (optional)
+        print(f"Reddit API Read-Only Status: {reddit.read_only}")
+        print("-" * 20)
 
-            # --- << METHOD 2: Scoring one by one (Fallback if batching doesn't work) >> ---
-            for book_idx in all_book_indices:
-                book_idx_tensor = torch.tensor([book_idx], dtype=torch.long).to(device)
-                score = model(user_idx_tensor, book_idx_tensor).item()
-                scores_with_indices.append((book_idx, score)) # Store internal index and score
-            # -----------------------------------------------------------------------------
+        # Construct the search query - adding "review" might help narrow results
+        # Using quotes around the title helps find exact matches
+        search_query = f'"{book_title}" spoiler free review'
+        print(f"Searching for: '{search_query}' in subreddits: {', '.join(subreddits)}")
+        print("-" * 20)
 
 
-        # --- Sort by score and get top 10 ---
-        # Sort based on the score (the second element in the tuple)
-        top_results = sorted(scores_with_indices, key=lambda x: x[1], reverse=True)[:10]
+        for sub_name in subreddits:
+            try:
+                subreddit = reddit.subreddit(sub_name)
+                print(f"Searching in r/{sub_name}...")
 
-        # --- Prepare response ---
-        recommendations = []
-        for book_index, score in top_results:
-            # Map the internal book index back to the original book ID
-            original_book_id = idx2book.get(book_index, 'UNKNOWN_ID')
-            # Get the title using the original book ID
-            title = book_id_to_title.get(str(original_book_id), "Title Not Found")
-            recommendations.append({"book_id": original_book_id, "title": title, "score": round(score, 4)})
+                # Search for submissions (posts) matching the query
+                # Sorting by relevance or top might yield better results initially
+                search_results = subreddit.search(search_query, sort='relevance', limit=limit)
 
-        print(f"Top 10 recommendations for user {user_id}: {recommendations}")
+                found_count = 0
+                for submission in search_results:
+                    # Basic filtering: Ensure the book title is likely in the post title or selftext
+                    # This is a simple check; more advanced NLP could be used.
+                    if book_title.lower() in submission.title.lower() or \
+                       (submission.selftext and book_title.lower() in submission.selftext.lower()):
 
-        # --- Return JSON with book IDs and titles ---
-        return jsonify({
-            "test_user": user_id, # Keep track of which user was used
-            "recommendations": recommendations
-        })
+                        reviews.append({
+                            'title': submission.title,
+                            'score': submission.score,
+                            'url': submission.url,
+                            'subreddit': sub_name,
+                            'body_snippet': submission.selftext[:150] + '...' if submission.selftext else '[No body text]' # Add a snippet
+                        })
+                        found_count += 1
 
+                if found_count == 0:
+                    print(f" -> No relevant posts found in r/{sub_name} for this query.")
+                else:
+                     print(f" -> Found {found_count} potential post(s) in r/{sub_name}.")
+
+
+            except praw.exceptions.PRAWException as e:
+                print(f"Error searching subreddit r/{sub_name}: {e}")
+            except Exception as e:
+                 print(f"An unexpected error occurred while searching r/{sub_name}: {e}")
+
+
+    except praw.exceptions.PRAWException as e:
+        print(f"ERROR: Failed to connect to Reddit or PRAW error: {e}")
     except Exception as e:
-        app.logger.error(f"Error during recommendation generation for user {user_id}: {e}", exc_info=True)
-        return jsonify({"error": "Failed to generate recommendations."}), 500
+        print(f"An unexpected error occurred: {e}")
 
+    return reviews
 
+# --- Example Usage ---
 if __name__ == "__main__":
-    # Add basic logging configuration if not done elsewhere
-    logging.basicConfig(level=logging.INFO)
-    app.logger.setLevel(logging.INFO)
-    # Consider host='0.0.0.0' if running in a container or need external access
-    app.run(debug=True, port=5000) # Use the same port as before (default is 5000)
+    # Replace with the book title you want to search for
+    example_book_title = "Project Hail Mary"
+
+    print(f"Attempting to fetch Reddit reviews for: '{example_book_title}'")
+    print("=" * 40)
+
+    fetched_reviews = get_reddit_reviews(example_book_title)
+
+    print("=" * 40)
+    if fetched_reviews:
+        print(f"Found {len(fetched_reviews)} potential review posts:")
+        for i, review in enumerate(fetched_reviews, 1):
+            print(f"\n--- Post {i} ---")
+            print(f"  Subreddit: r/{review['subreddit']}")
+            print(f"  Title: {review['title']}")
+            print(f"  Score: {review['score']}")
+            print(f"  URL: {review['url']}")
+            print(f"  Snippet: {review['body_snippet']}")
+    else:
+        print("No relevant Reddit posts found or an error occurred.")

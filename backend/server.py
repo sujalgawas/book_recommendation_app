@@ -27,7 +27,7 @@ import difflib
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv # If using .env file (pip install python-dotenv)
-
+import praw
 
 app = Flask(__name__)
 CORS(app)
@@ -540,6 +540,8 @@ api_keys = load_api_keys('password.txt')
 gemini_key = api_keys.get('gemini_api_key')
 service_1 = api_keys.get('service_1')
 service_2 = api_keys.get('service_2')
+reddit_client_id = api_keys.get('reddit_client_id')
+reddit_client_secret = api_keys.get('reddit_cliend_secret')
 
 # Initialize the Books API service
 #service = build('books', 'v1', developerKey=service_1, cache_discovery=False)
@@ -558,6 +560,137 @@ else:
         app.logger.info("Gemini API Key configured.")
     except Exception as e:
          app.logger.error(f"Error configuring Gemini API: {e}")
+     
+REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", reddit_client_id) # Replace with your client ID
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", reddit_client_secret) # Replace with your client secret
+REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "script:my-book-review-app:v1.0 (by /u/your_username)") # Replace with your user agent
+
+# --- Configuration ---
+# Subreddits to search within (can be adjusted)
+DEFAULT_SUBREDDITS = [
+    'books', 'literature', 'suggestmeabook', 'booksuggestions',
+    'Fantasy', 'SciFi', 'freeEbooks', '52book', 'whatsthatbook',
+    'bookshelf', 'Outlander', 'YAlit', 'bookexchange',
+]
+LIMIT_PER_SUBREDDIT = 5 # Limit results per subreddit for API performance
+
+# --- Helper Function (Adapted from your script) ---
+def get_reddit_reviews_internal(book_title, subreddits=None, limit=LIMIT_PER_SUBREDDIT):
+    """
+    Internal function to fetch Reddit posts.
+    Uses credentials loaded from environment variables.
+    """
+    if subreddits is None:
+        subreddits = DEFAULT_SUBREDDITS
+
+    reviews = []
+
+    # Check if credentials are set
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET or not REDDIT_USER_AGENT:
+        print("ERROR: Reddit API credentials not found in environment variables.")
+        # Return an indicator of configuration error, or raise an exception
+        # For the API route, we'll return an error response later.
+        return None # Indicate configuration error
+
+    try:
+        print(f"Initializing PRAW with User Agent: {REDDIT_USER_AGENT}")
+        reddit = praw.Reddit(
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_CLIENT_SECRET,
+            user_agent=REDDIT_USER_AGENT,
+            read_only=True # Explicitly set read-only mode
+        )
+        print(f"PRAW Initialized. Read-Only: {reddit.read_only}")
+
+        # Construct the search query
+        # Using quotes helps find exact matches. Added "review" to narrow down.
+        search_query = f'"{book_title}" book review'
+        print(f"Searching Reddit for: '{search_query}' in subreddits: {', '.join(subreddits)}")
+
+        for sub_name in subreddits:
+            try:
+                subreddit = reddit.subreddit(sub_name)
+                print(f"-> Searching in r/{sub_name}...")
+
+                search_results = subreddit.search(search_query, sort='relevance', limit=limit)
+
+                found_count = 0
+                for submission in search_results:
+                    # Basic filtering: Check if title is relevant
+                    if book_title.lower() in submission.title.lower() or \
+                       (submission.selftext and book_title.lower() in submission.selftext.lower()):
+
+                        reviews.append({
+                            'title': submission.title,
+                            'score': submission.score,
+                            'url': submission.url,
+                            'subreddit': sub_name,
+                            'body_snippet': submission.selftext[:200] + '...' if submission.selftext else '[No body text]', # Slightly longer snippet
+                            'created_utc': submission.created_utc # Add creation time
+                        })
+                        found_count += 1
+                if found_count > 0:
+                     print(f"   Found {found_count} potential post(s) in r/{sub_name}.")
+
+            except praw.exceptions.PRAWException as e:
+                print(f"   Error searching subreddit r/{sub_name}: {e}")
+            except Exception as e:
+                 print(f"   An unexpected error occurred while searching r/{sub_name}: {e}")
+
+    except praw.exceptions.PRAWException as e:
+        print(f"ERROR: Failed to connect to Reddit or PRAW error: {e}")
+        raise # Re-raise PRAW exceptions to be caught by the route handler
+    except Exception as e:
+        print(f"An unexpected error occurred during Reddit search: {e}")
+        raise # Re-raise other exceptions
+
+    # Sort reviews by score (descending)
+    reviews.sort(key=lambda x: x['score'], reverse=True)
+
+    return reviews
+
+# --- New API Route ---
+@app.route('/api/reddit-reviews', methods=['GET'])
+def fetch_reddit_reviews_route():
+    """
+    API endpoint to fetch Reddit posts related to a book title.
+    Expects 'title' as a query parameter.
+    e.g., /api/reddit-reviews?title=Project%20Hail%20Mary
+    """
+    book_title = request.args.get('title')
+
+    if not book_title:
+        return jsonify({"error": "Missing 'title' query parameter"}), 400
+
+    # Check credentials before proceeding
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET or not REDDIT_USER_AGENT:
+         return jsonify({"error": "Reddit API credentials not configured on server."}), 500
+
+    try:
+        print(f"Received request for Reddit reviews for title: {book_title}")
+        reviews_data = get_reddit_reviews_internal(book_title)
+
+        if reviews_data is None:
+             # This case now specifically means credentials weren't found by the helper
+             return jsonify({"error": "Reddit API credentials configuration error on server."}), 500
+
+        print(f"Found {len(reviews_data)} relevant Reddit posts for '{book_title}'.")
+        return jsonify(reviews_data), 200
+
+    except praw.exceptions.ResponseException as e:
+         # Handle specific PRAW response errors (e.g., 401 Unauthorized, 403 Forbidden)
+         print(f"PRAW Response Error fetching Reddit reviews: {e}")
+         return jsonify({"error": f"Reddit API Error: {e.response.status_code} - Check credentials or permissions."}), 500
+    except praw.exceptions.PRAWException as e:
+        print(f"PRAW Error fetching Reddit reviews: {e}")
+        return jsonify({"error": "Failed to fetch data from Reddit due to PRAW error."}), 500
+    except Exception as e:
+        print(f"Unexpected Server Error fetching Reddit reviews: {e}")
+        # Log the full error traceback here for debugging
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "An unexpected server error occurred."}), 500
+
          
 @app.route('/api/user/<int:user_id>/ask_gemini', methods=['POST'])
 # @login_required # Recommended for security

@@ -432,3 +432,237 @@
       gap: 15px;
   }
 }
+
+/* Add these styles to your existing BookPage.css or a relevant CSS file */
+
+/* --- Loading & Error States --- */
+.loading-container, .error-container, .not-found-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-height: 80vh; /* Make sure it takes up significant space */
+  padding: 2rem;
+  text-align: center;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  font-size: 1.2em;
+  color: #555;
+}
+
+.loading-indicator svg { /* Style for Loader2 icon */
+  margin-right: 0.5em;
+}
+
+.error-icon {
+  color: #dc3545; /* Red color for error icon */
+  margin-bottom: 1rem;
+}
+
+.error-message {
+  color: #dc3545;
+  margin-bottom: 0.5rem;
+}
+
+.error-details {
+  color: #6c757d; /* Gray color for details */
+  margin-bottom: 1.5rem;
+  max-width: 500px;
+}
+
+.home-button {
+  padding: 0.75rem 1.5rem;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.home-button:hover {
+  background-color: #0056b3;
+}
+
+/* Smaller loader/error for inline sections */
+.small-loader, .small-error {
+  font-size: 0.9em;
+  color: #666;
+  padding: 1rem 0;
+  display: flex;
+  align-items: center;
+}
+.small-loader svg {
+  margin-right: 0.5em;
+}
+.small-error {
+  color: #c82333;
+}
+.small-error svg {
+   margin-right: 0.5em;
+   color: #c82333; /* Match text color */
+}
+
+.no-results-message {
+  color: #6c757d;
+  font-style: italic;
+  padding: 1rem 0;
+}
+
+
+/* --- Reddit Reviews Section --- */
+.reddit-reviews-section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #eee; /* Separator */
+}
+
+.section-title { /* Assuming you have this style already */
+  font-size: 1.4em;
+  margin-bottom: 1rem;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+
+.reddit-reviews-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.reddit-review-item {
+  background-color: #1c1c1c; /* Light background for each item */
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  transition: box-shadow 0.2s ease-in-out;
+}
+
+.reddit-review-item:hover {
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.review-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.85em;
+  color: #fbfdff; /* Muted color for header info */
+  flex-wrap: wrap; /* Allow wrapping on small screens */
+  gap: 0.5rem; /* Spacing between header items */
+}
+
+.review-subreddit {
+  font-weight: 500;
+  color: #007bff; /* Reddit blue-ish */
+}
+
+.review-score {
+  /* Optional: Add specific styling */
+}
+.review-date {
+   white-space: nowrap; /* Prevent date from wrapping */
+}
+
+.review-title-link {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: #ffffff;
+  text-decoration: none;
+  display: inline-block; /* Allows margin */
+  margin-bottom: 0.5rem;
+  transition: color 0.2s ease;
+}
+
+.review-title-link:hover {
+  color: #0056b3;
+  text-decoration: underline;
+}
+
+.external-link-icon {
+  margin-left: 4px;
+  vertical-align: middle; /* Align icon nicely with text */
+  opacity: 0.6;
+}
+
+.review-snippet {
+  font-size: 0.95em;
+  color: #ffffff;
+  line-height: 1.5;
+  margin: 0; /* Remove default paragraph margin */
+  /* Optional: Limit lines shown */
+  /* display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden; */
+}
+
+/* --- Other existing styles for BookPage.css --- */
+/* Make sure you have styles for .book-page, .content-wrapper, .back-button, */
+/* .book-main-layout, .column-image-actions, .book-image, .actions-container, */
+/* .action-button, .liked, .add-playlist, .playlist-status-box, */
+/* .playlist-buttons-container, .playlist-tag-button, .active, .remove-button, */
+/* .column-details, .book-title, .book-authors, .rating-container, .rating-text */
+/* .genre-text, .synopsis-section, .synopsis-text, .similar-books-section, */
+/* .similar-books-grid, .similar-book-card, .similar-book-image, */
+/* .similar-book-title etc. */
+
+/* Example adjustments for layout */
+.book-main-layout {
+  display: flex;
+  gap: 2rem; /* Space between columns */
+  flex-wrap: wrap; /* Allow columns to wrap on smaller screens */
+}
+
+.column-image-actions {
+  flex: 0 0 300px; /* Fixed width for image column, adjust as needed */
+  max-width: 100%; /* Ensure it doesn't overflow */
+}
+
+.column-details {
+  flex: 1; /* Allow details column to take remaining space */
+  min-width: 300px; /* Prevent it from becoming too narrow */
+}
+
+.book-image {
+  width: 100%;
+  max-width: 300px; /* Max width for the image itself */
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+/* Add more responsive styles as needed */
+@media (max-width: 768px) {
+  .book-main-layout {
+      flex-direction: column; /* Stack columns */
+      align-items: center; /* Center content when stacked */
+  }
+  .column-image-actions {
+      flex-basis: auto; /* Reset basis */
+      width: 100%;
+      max-width: 350px; /* Limit width when stacked */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+  }
+   .column-details {
+      width: 100%; /* Take full width when stacked */
+  }
+   .review-header {
+      font-size: 0.8em; /* Slightly smaller header on mobile */
+  }
+  .review-title-link {
+      font-size: 1em;
+  }
+  .review-snippet {
+      font-size: 0.9em;
+  }
+}
