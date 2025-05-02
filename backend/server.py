@@ -28,6 +28,13 @@ import os
 import google.generativeai as genai
 from dotenv import load_dotenv # If using .env file (pip install python-dotenv)
 import praw
+import time
+import re
+from datetime import datetime, timedelta
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+import nltk
+from collections import Counter
 
 app = Flask(__name__)
 CORS(app)
@@ -565,89 +572,451 @@ REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", reddit_client_id) # Replac
 REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", reddit_client_secret) # Replace with your client secret
 REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "script:my-book-review-app:v1.0 (by /u/your_username)") # Replace with your user agent
 
-# --- Configuration ---
-# Subreddits to search within (can be adjusted)
-DEFAULT_SUBREDDITS = [
-    'books', 'literature', 'suggestmeabook', 'booksuggestions',
-    'Fantasy', 'SciFi', 'freeEbooks', '52book', 'whatsthatbook',
-    'bookshelf', 'Outlander', 'YAlit', 'bookexchange',
-]
-LIMIT_PER_SUBREDDIT = 5 # Limit results per subreddit for API performance
 
-# --- Helper Function (Adapted from your script) ---
-def get_reddit_reviews_internal(book_title, subreddits=None, limit=LIMIT_PER_SUBREDDIT):
+# --- Configuration ---
+# Reduced list of subreddits to focus on the most relevant book communities
+DEFAULT_SUBREDDITS = [
+    'books', 'suggestmeabook', 'booksuggestions',
+    'Fantasy', 'SciFi', 'horrorlit',
+    'YAlit', 'goodreads', 'bookclub'
+]
+
+# Keep the genre subreddits for specialized searches
+GENRE_SUBREDDITS = {
+    'fantasy': ['Fantasy', 'fantasywriters', 'cosmere'],
+    'science fiction': ['scifi', 'printSF', 'sciencefiction'],
+    'horror': ['horrorlit', 'stephenking'],
+    'mystery': ['mystery'],
+    'romance': ['RomanceBooks'],
+    'history': ['HistoricalFiction'],
+    'biography': ['biography'],
+    'philosophy': ['philosophy'],
+    'politics': ['politics'],
+    'science': ['science']
+}
+
+# Reduced limits for faster searches
+DEFAULT_LIMIT_PER_SUBREDDIT = 2
+MAX_TOTAL_RESULTS = 4  # Cap on total results to return
+MIN_RELEVANCE_SCORE = 0.6  # Increased minimum relevance score to filter out less relevant posts
+COMMENT_DEPTH = 1  # Reduced comment depth
+COMMENT_LIMIT = 1  # Reduced comment limit per post
+
+# Rest of the timeframes and stopwords remain the same
+TIMEFRAMES = {
+    'day': 1,
+    'week': 7,
+    'month': 30,
+    'year': 365,
+    'all': None
+}
+
+# Prepare stopwords for better relevance scoring
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    STOP_WORDS = set(stopwords.words('english'))
+except:
+    # Fallback basic stopwords if NLTK isn't available
+    STOP_WORDS = {'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'about', 'as', 'of', 'and', 'or', 'is', 'was', 'be', 'been'}
+
+def get_reddit_reviews(book_title, author=None, genre=None, timeframe='all', detailed=False, 
+                      subreddits=None, limit=DEFAULT_LIMIT_PER_SUBREDDIT, 
+                      include_comments=True, fetch_images=False):
+    """
+    Enhanced function to fetch Reddit posts about books with advanced options.
+    
+    Args:
+        book_title (str): The title of the book to search for
+        author (str, optional): Author name to refine search
+        genre (str, optional): Book genre to include genre-specific subreddits
+        timeframe (str, optional): 'day', 'week', 'month', 'year', or 'all'
+        detailed (bool): Whether to return detailed post content analysis
+        subreddits (list, optional): List of subreddits to search
+        limit (int): Limit of posts per subreddit
+        include_comments (bool): Whether to include top comments
+        fetch_images (bool): Whether to extract image links from posts
+    
+    Returns:
+        dict: Results containing posts, metadata and search info
+    """
+    start_time = time.time()
+    
+    # Validation and input processing
+    if not book_title or not isinstance(book_title, str):
+        return {"error": "Valid book title is required", "status": "error"}
+    
+    # Prepare search targets
+    book_title = book_title.strip()
+    
+    # Sanitize inputs - enforce lower limits
+    max_limit = min(limit, DEFAULT_LIMIT_PER_SUBREDDIT)  # Cap limit to default
+    
+    # Set up subreddits based on genre if provided
+    if subreddits is None:
+        subreddits = DEFAULT_SUBREDDITS.copy()
+        
+        # Add genre-specific subreddits if a genre is provided, but limit to 3 most relevant
+        if genre and genre.lower() in GENRE_SUBREDDITS:
+            genre_subs = GENRE_SUBREDDITS[genre.lower()][:3]  # Take just top 3 genre subreddits
+            for genre_sub in genre_subs:
+                if genre_sub not in subreddits:
+                    subreddits.append(genre_sub)
+    
+    # Limit the total number of subreddits searched to 10 max for performance
+    if len(subreddits) > 10:
+        subreddits = subreddits[:10]
+    
+    # Calculate time range if timeframe specified
+    time_filter = 'all'
+    start_date = None
+    if timeframe in TIMEFRAMES and TIMEFRAMES[timeframe]:
+        time_filter = timeframe
+        if TIMEFRAMES[timeframe]:
+            start_date = datetime.now() - timedelta(days=TIMEFRAMES[timeframe])
+    
+    # Initialize results structure
+    result = {
+        "status": "success",
+        "query": {
+            "book_title": book_title,
+            "author": author,
+            "genre": genre,
+            "timeframe": timeframe,
+            "subreddits": subreddits
+        },
+        "metadata": {
+            "total_posts_found": 0,
+            "subreddits_searched": len(subreddits),
+            "search_time_seconds": 0,
+            "timestamp": datetime.now().isoformat()
+        },
+        "posts": []
+    }
+    
+    # Run the internal search function
+    try:
+        posts_data = get_reddit_reviews_internal(
+            book_title=book_title,
+            author=author,
+            subreddits=subreddits,
+            limit=max_limit,
+            time_filter=time_filter,
+            start_date=start_date,
+            include_comments=include_comments,
+            fetch_images=fetch_images
+        )
+        
+        if posts_data is None:
+            return {"error": "Reddit API credentials not configured", "status": "error"}
+            
+        # Process and categorize posts
+        result["posts"] = process_reddit_results(
+            posts_data, 
+            book_title, 
+            author, 
+            detailed
+        )
+        
+        # Update metadata
+        result["metadata"]["total_posts_found"] = len(result["posts"])
+        result["metadata"]["search_time_seconds"] = round(time.time() - start_time, 2)
+        
+        # Add category counts
+        category_counts = Counter(post.get('category', 'discussion') for post in result["posts"])
+        result["metadata"]["categories"] = {cat: count for cat, count in category_counts.items()}
+        
+        # Cap total results for performance - strictly enforce the MAX_TOTAL_RESULTS limit
+        if len(result["posts"]) > MAX_TOTAL_RESULTS:
+            result["posts"] = result["posts"][:MAX_TOTAL_RESULTS]
+            result["metadata"]["results_limited"] = True
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "query": result["query"]
+        }
+    
+    return result
+
+# The rest of the functions remain the same as in your original code
+# get_reddit_reviews_internal, process_reddit_results, categorize_post, calculate_post_relevance
+def get_reddit_reviews_internal(book_title, author=None, subreddits=None, limit=DEFAULT_LIMIT_PER_SUBREDDIT, 
+                               time_filter='all', start_date=None, include_comments=True, fetch_images=False):
     """
     Internal function to fetch Reddit posts.
     Uses credentials loaded from environment variables.
     """
     if subreddits is None:
         subreddits = DEFAULT_SUBREDDITS
-
-    reviews = []
-
+        
+    all_posts = []
+    
+    # Prepare search terms with better precision
+    search_terms = []
+    
+    # Add quoted book title for exact matches
+    search_terms.append(f'"{book_title}"')
+    
+    # Add book-related terms for relevance
+    search_terms.append("book OR novel OR reading OR literature OR review")
+    
+    # If author provided, include in search
+    if author:
+        sanitized_author = author.strip()
+        search_terms.append(f'"{sanitized_author}" OR "by {sanitized_author}"')
+    
+    # Combine search terms
+    search_query = ' '.join(search_terms)
+    
     # Check if credentials are set
     if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET or not REDDIT_USER_AGENT:
         print("ERROR: Reddit API credentials not found in environment variables.")
-        # Return an indicator of configuration error, or raise an exception
-        # For the API route, we'll return an error response later.
-        return None # Indicate configuration error
-
+        return None
+    
     try:
         print(f"Initializing PRAW with User Agent: {REDDIT_USER_AGENT}")
         reddit = praw.Reddit(
             client_id=REDDIT_CLIENT_ID,
             client_secret=REDDIT_CLIENT_SECRET,
             user_agent=REDDIT_USER_AGENT,
-            read_only=True # Explicitly set read-only mode
+            read_only=True
         )
-        print(f"PRAW Initialized. Read-Only: {reddit.read_only}")
-
-        # Construct the search query
-        # Using quotes helps find exact matches. Added "review" to narrow down.
-        search_query = f'"{book_title}" book review'
-        print(f"Searching Reddit for: '{search_query}' in subreddits: {', '.join(subreddits)}")
-
+        
+        print(f"Searching Reddit for: '{search_query}' in {len(subreddits)} subreddits")
+        
+        # Search in each subreddit
         for sub_name in subreddits:
             try:
                 subreddit = reddit.subreddit(sub_name)
-                print(f"-> Searching in r/{sub_name}...")
-
-                search_results = subreddit.search(search_query, sort='relevance', limit=limit)
-
-                found_count = 0
+                
+                # Handle rate limiting with backoff
+                for attempt in range(3):  # Try up to 3 times
+                    try:
+                        # Use time filter to narrow results by timeframe
+                        search_results = list(subreddit.search(
+                            search_query, 
+                            sort='relevance', 
+                            time_filter=time_filter,
+                            limit=limit
+                        ))
+                        break  # Successful, exit retry loop
+                    except Exception as e:
+                        if 'rate limit' in str(e).lower():
+                            print(f"   Rate limited on attempt {attempt+1}, waiting...")
+                            time.sleep(2 ** attempt)  # Exponential backoff: 1, 2, 4 seconds
+                        else:
+                            raise  # Re-raise if not a rate limit issue
+                
+                # Process each submission
                 for submission in search_results:
-                    # Basic filtering: Check if title is relevant
-                    if book_title.lower() in submission.title.lower() or \
-                       (submission.selftext and book_title.lower() in submission.selftext.lower()):
-
-                        reviews.append({
-                            'title': submission.title,
-                            'score': submission.score,
-                            'url': submission.url,
-                            'subreddit': sub_name,
-                            'body_snippet': submission.selftext[:200] + '...' if submission.selftext else '[No body text]', # Slightly longer snippet
-                            'created_utc': submission.created_utc # Add creation time
-                        })
-                        found_count += 1
-                if found_count > 0:
-                     print(f"   Found {found_count} potential post(s) in r/{sub_name}.")
-
+                    # Skip if too old when using a date filter
+                    if start_date and datetime.fromtimestamp(submission.created_utc) < start_date:
+                        continue
+                        
+                    # Advanced relevance checking
+                    relevance = calculate_post_relevance(submission, book_title, author)
+                    
+                    # Skip if relevance is too low
+                    if relevance < MIN_RELEVANCE_SCORE:
+                        continue
+                    
+                    # Extract post data
+                    post_data = {
+                        'id': submission.id,
+                        'title': submission.title,
+                        'score': submission.score,
+                        'url': submission.url,
+                        'permalink': f"https://www.reddit.com{submission.permalink}",
+                        'subreddit': sub_name,
+                        'created_utc': submission.created_utc,
+                        'created_date': datetime.fromtimestamp(submission.created_utc).isoformat(),
+                        'num_comments': submission.num_comments,
+                        'relevance_score': round(relevance, 2),
+                        'author': str(submission.author) if submission.author else '[deleted]',
+                        'is_self': submission.is_self
+                    }
+                    
+                    # Add body text for self posts
+                    if submission.is_self and submission.selftext:
+                        # Full text for detailed mode, snippet otherwise
+                        post_data['body'] = submission.selftext
+                        post_data['body_snippet'] = submission.selftext[:300] + '...' if len(submission.selftext) > 300 else submission.selftext
+                    
+                    # Extract images if requested
+                    if fetch_images and hasattr(submission, 'preview'):
+                        try:
+                            if 'images' in submission.preview:
+                                post_data['images'] = [img['source']['url'] for img in submission.preview['images']]
+                        except AttributeError:
+                            pass
+                    
+                    # Get comments if requested
+                    if include_comments and submission.num_comments > 0:
+                        submission.comments.replace_more(limit=0)  # Don't fetch MoreComments
+                        top_comments = submission.comments.list()[:COMMENT_LIMIT]
+                        
+                        post_data['comments'] = [{
+                            'author': str(comment.author) if comment.author else '[deleted]',
+                            'body': comment.body,
+                            'score': comment.score,
+                            'created_utc': comment.created_utc
+                        } for comment in top_comments if hasattr(comment, 'body')]
+                    
+                    all_posts.append(post_data)
+                
             except praw.exceptions.PRAWException as e:
                 print(f"   Error searching subreddit r/{sub_name}: {e}")
             except Exception as e:
-                 print(f"   An unexpected error occurred while searching r/{sub_name}: {e}")
-
+                print(f"   Unexpected error in r/{sub_name}: {e}")
+                
     except praw.exceptions.PRAWException as e:
-        print(f"ERROR: Failed to connect to Reddit or PRAW error: {e}")
-        raise # Re-raise PRAW exceptions to be caught by the route handler
+        print(f"ERROR: Reddit API connection error: {e}")
+        raise
     except Exception as e:
-        print(f"An unexpected error occurred during Reddit search: {e}")
-        raise # Re-raise other exceptions
+        print(f"ERROR: Unexpected error during Reddit search: {e}")
+        raise
+    
+    # Remove duplicates based on post ID
+    seen_ids = set()
+    unique_posts = []
+    for post in all_posts:
+        if post['id'] not in seen_ids:
+            seen_ids.add(post['id'])
+            unique_posts.append(post)
+    
+    return unique_posts
 
-    # Sort reviews by score (descending)
-    reviews.sort(key=lambda x: x['score'], reverse=True)
+def process_reddit_results(posts, book_title, author=None, detailed=False):
+    """
+    Process and organize Reddit results for better presentation.
+    
+    Categorizes, sorts, and enriches the posts data.
+    """
+    if not posts:
+        return []
+    
+    # Process each post
+    processed_posts = []
+    for post in posts:
+        # Skip posts with very low scores unless they have comments
+        if post['score'] < 1 and (not post.get('comments') or len(post.get('comments', [])) == 0):
+            continue
+            
+        # Categorize the post
+        post['category'] = categorize_post(post, book_title)
+        
+        # Extract discussion sentiment if detailed analysis requested
+        if detailed and 'body' in post:
+            post['sentiment'] = "neutral"  # Basic sentiment - would use NLP in production
+            
+            # Extract key phrases (simplified version)
+            try:
+                words = word_tokenize(post['body'].lower())
+                filtered_words = [word for word in words if word.isalnum() and word not in STOP_WORDS]
+                word_freq = Counter(filtered_words).most_common(10)
+                post['key_phrases'] = [word for word, _ in word_freq]
+            except:
+                post['key_phrases'] = []
+        
+        # Remove full body text if not detailed mode to reduce payload size
+        if not detailed and 'body' in post:
+            del post['body']
+            
+        processed_posts.append(post)
+    
+    # Sort by a combined relevance and popularity score
+    for post in processed_posts:
+        # Combined score formula: relevance × (upvotes + num_comments×2)
+        engagement = post['score'] + (post.get('num_comments', 0) * 2)
+        post['engagement_score'] = round(post['relevance_score'] * engagement, 2)
+    
+    # Sort by the engagement score
+    processed_posts.sort(key=lambda x: x.get('engagement_score', 0), reverse=True)
+    
+    return processed_posts
 
-    return reviews
+def categorize_post(post, book_title):
+    """Categorize a post based on its content and title"""
+    title = post['title'].lower()
+    
+    # Check for common post categories
+    if 'review' in title or 'thoughts on' in title:
+        return 'review'
+    elif 'vs' in title or 'compared' in title:
+        return 'comparison'
+    elif 'recommend' in title or 'suggest' in title:
+        return 'recommendation'
+    elif 'help' in title or 'looking for' in title or '?' in title:
+        return 'question'
+    elif 'discussion' in title or 'spoilers' in title:
+        return 'discussion'
+    elif 'analysis' in title or 'essay' in title or 'breakdown' in title:
+        return 'analysis'
+    else:
+        # Default category
+        return 'discussion'
+
+def calculate_post_relevance(submission, book_title, author=None):
+    """
+    Calculate relevance score of a Reddit post to the book search.
+    
+    Returns:
+        float: Relevance score between 0.0 and 1.0
+    """
+    relevance_score = 0.0
+    book_title_lower = book_title.lower()
+    title_lower = submission.title.lower()
+    
+    # Check title for exact book title match (highest relevance)
+    if book_title_lower == title_lower:
+        return 1.0
+    
+    # Title contains exact book title
+    if book_title_lower in title_lower:
+        relevance_score += 0.8
+    
+    # Check for partial matches, acronyms, etc.
+    book_words = set(re.findall(r'\w+', book_title_lower))
+    title_words = set(re.findall(r'\w+', title_lower))
+    
+    # Calculate word overlap ratio
+    if book_words and title_words:
+        overlap = len(book_words.intersection(title_words)) / len(book_words)
+        relevance_score = max(relevance_score, overlap * 0.7)
+    
+    # Check selftext for relevance
+    if submission.is_self and submission.selftext:
+        selftext_lower = submission.selftext.lower()
+        
+        # Exact match in body
+        if book_title_lower in selftext_lower:
+            relevance_score = max(relevance_score, 0.75)
+        
+        # Author mention increases relevance
+        if author and author.lower() in selftext_lower:
+            relevance_score += 0.15
+            
+        # Calculate density of book title in selftext
+        book_mentions = selftext_lower.count(book_title_lower)
+        word_count = len(re.findall(r'\w+', selftext_lower))
+        
+        if word_count > 0:
+            mention_density = min(book_mentions / (word_count / 100), 5) / 10
+            relevance_score += mention_density
+    
+    # Check comments count - more comments might indicate relevance
+    if submission.num_comments > 10:
+        relevance_score += 0.1
+    
+    # High score increases relevance slightly
+    if submission.score > 50:
+        relevance_score += 0.1
+    
+    # Cap at 1.0
+    return min(relevance_score, 1.0)
+
 
 # --- New API Route ---
 @app.route('/api/reddit-reviews', methods=['GET'])
