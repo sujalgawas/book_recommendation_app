@@ -35,6 +35,9 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 import nltk
 from collections import Counter
+import ssl  # Need this for ssl.SSLError
+import requests # Keep if you catch requests.exceptions.SSLError
+from googleapiclient.errors import HttpError # Make sure this is imported
 
 app = Flask(__name__)
 CORS(app)
@@ -476,7 +479,7 @@ class Book(db.Model):
     genre = db.Column(db.String(255))  # Added genre field
     synopsis = db.Column(db.Text)
     rating = db.Column(db.Float)
-    image_link = db.Column(db.String(255))
+    image_link = db.Column(db.Text)
 
     def __repr__(self):
         return f'<Book {self.title}>'
@@ -1632,88 +1635,109 @@ def add_liked_book(user_id):
         'book': book.to_dict()
     })
     
+
 @app.route('/api/book/<string:google_book_id>/sync', methods=['POST'])
 def sync_book_details_from_api(google_book_id):
     """
-    Fetches latest details from Google Books API and updates/creates
-    the corresponding record in the local 'books' table.
+    Fetches details from Google Books API, updates/creates local record.
+    Includes retry logic specifically for SSL errors.
     """
     app.logger.info(f"Sync requested for book ID: {google_book_id}")
-    try:
-        # --- Fetch from Google Books API ---
-        response = service.volumes().get(volumeId=google_book_id).execute()
-        app.logger.debug(f"Google API response for sync: {response}")
 
-        volume_info = response.get('volumeInfo', {})
-        sale_info = response.get('saleInfo', {})
-        image_links = volume_info.get('imageLinks', {})
+    max_retries = 3
+    base_delay = 1.0 # seconds (use float for potential fractional seconds)
 
-        # --- Process Data (same logic as before) ---
-        image_url = (image_links.get('extraLarge') or image_links.get('large') or
-                     image_links.get('medium') or image_links.get('thumbnail'))
-        categories = volume_info.get('categories', [])
-        genre = categories[0] if categories else 'N/A'
-        list_price = sale_info.get('listPrice') # Dict or None
-        buy_link = sale_info.get('buyLink')     # String or None
-        rating_value = volume_info.get('averageRating')
-        try: rating = float(rating_value) if rating_value is not None else None
-        except (ValueError, TypeError): rating = None
-        authors_list = volume_info.get('authors', ['Unknown'])
-        authors_str = ', '.join(authors_list) if isinstance(authors_list, list) else 'Unknown'
+    for attempt in range(max_retries):
+        try:
+            app.logger.info(f"Attempt {attempt + 1}/{max_retries} to sync {google_book_id}")
+            # --- Fetch from Google Books API ---
+            response = service.volumes().get(volumeId=google_book_id).execute()
+            app.logger.debug(f"Google API response for sync (Attempt {attempt+1}): {response}")
 
+            # --- Process Data (Your existing logic) ---
+            volume_info = response.get('volumeInfo', {})
+            sale_info = response.get('saleInfo', {})
+            image_links = volume_info.get('imageLinks', {})
+            image_url = (image_links.get('extraLarge') or image_links.get('large') or
+                         image_links.get('medium') or image_links.get('thumbnail'))
+            categories = volume_info.get('categories', [])
+            genre = categories[0] if categories else 'N/A'
+            rating_value = volume_info.get('averageRating')
+            try: rating = float(rating_value) if rating_value is not None else None
+            except (ValueError, TypeError): rating = None
+            authors_list = volume_info.get('authors', ['Unknown'])
+            authors_str = ', '.join(authors_list) if isinstance(authors_list, list) else 'Unknown'
 
-        # --- Find existing book or create new ---
-        book = Book.query.filter_by(google_book_id=google_book_id).first()
+            # --- Find existing book or create new (Your existing logic) ---
+            book = Book.query.filter_by(google_book_id=google_book_id).first()
 
-        if book:
-            # Update existing book
-            app.logger.info(f"Updating existing book record for {google_book_id}")
-            book.title = volume_info.get('title', book.title) # Keep old if new is missing
-            book.authors = authors_str
-            book.genre = genre
-            book.synopsis = volume_info.get('description', book.synopsis)
-            book.rating = rating
-            book.image_link = image_url
-            # Add price/link if needed in Book model, or store elsewhere
-            # book.listPrice = list_price # Requires Book model change
-            # book.buyLink = buy_link    # Requires Book model change
-        else:
-            # Create new book
-            app.logger.info(f"Creating new book record for {google_book_id}")
-            book = Book(
-                google_book_id=google_book_id,
-                title=volume_info.get('title', 'N/A'),
-                authors=authors_str,
-                genre=genre,
-                synopsis=volume_info.get('description', 'No synopsis available.'),
-                rating=rating,
-                image_link=image_url
-                # Add price/link if needed in Book model
-            )
-            db.session.add(book)
+            if book:
+                app.logger.info(f"Updating existing book record for {google_book_id}")
+                book.title = volume_info.get('title', book.title)
+                book.authors = authors_str
+                book.genre = genre
+                book.synopsis = volume_info.get('description', book.synopsis)
+                book.rating = rating
+                book.image_link = image_url
+            else:
+                app.logger.info(f"Creating new book record for {google_book_id}")
+                book = Book(
+                    google_book_id=google_book_id,
+                    title=volume_info.get('title', 'N/A'),
+                    authors=authors_str,
+                    genre=genre,
+                    synopsis=volume_info.get('description', 'No synopsis available.'),
+                    rating=rating,
+                    image_link=image_url
+                )
+                db.session.add(book)
 
-        db.session.commit()
-        app.logger.info(f"Successfully synced details for book ID: {google_book_id}")
-        # Return simple success - data will be fetched via the GET route
-        return jsonify({'status': 'success', 'message': 'Book details synced to DB'})
+            db.session.commit()
+            app.logger.info(f"Successfully synced details for book ID: {google_book_id} on attempt {attempt + 1}")
+            # SUCCESS: Exit the function
+            return jsonify({'status': 'success', 'message': 'Book details synced to DB'})
 
-    # --- Error Handling (same as before, adjusted messages) ---
-    except HttpError as e:
-        status_code = e.resp.status if hasattr(e, 'resp') else 500
-        error_message = f"Sync failed: Google Books API error (Status: {status_code}): {str(e)}"
-        app.logger.error(f"HttpError syncing {google_book_id}: {error_message}", exc_info=True)
-        if status_code == 404: error_message = "Sync failed: Book not found via Google Books API."
-        return jsonify({'status': 'fail', 'error': error_message}), status_code
-    except requests.exceptions.SSLError as ssl_e:
-         error_message = f"Sync failed: SSL Error connecting to Google Books API: {str(ssl_e)}."
-         app.logger.error(f"SSLError syncing {google_book_id}: {error_message}", exc_info=True)
-         return jsonify({'status': 'fail', 'error': error_message}), 500
-    except Exception as e:
-        db.session.rollback() # Rollback DB changes on general error
-        error_message = f"Sync failed: Unexpected error processing book {google_book_id}: {str(e)}"
-        if "[SSL: WRONG_VERSION_NUMBER]" in str(e): error_message += " [SSL Error]"
-        app.logger.error(f"Unexpected error syncing {google_book_id}: {error_message}", exc_info=True)
-        return jsonify({'status': 'fail', 'error': error_message}), 500
+        # --- Specific Error Handling for Retry ---
+        except (requests.exceptions.SSLError, ssl.SSLError) as ssl_e: # Catch both common SSL error types
+            app.logger.warning(f"Attempt {attempt + 1} failed for {google_book_id} with SSL Error: {ssl_e}")
+            # Check if it's the last attempt
+            if attempt + 1 == max_retries:
+                app.logger.error(f"Sync failed for {google_book_id} after {max_retries} attempts due to SSL Error.", exc_info=True)
+                error_message = f"Sync failed: SSL Error connecting to Google Books API after retries: {str(ssl_e)}."
+                if "[SSL: WRONG_VERSION_NUMBER]" in str(ssl_e):
+                     error_message += " [SSL: WRONG_VERSION_NUMBER Error]"
+                # FAIL: Return error after last retry
+                return jsonify({'status': 'fail', 'error': error_message}), 500
+            else:
+                # Wait before retrying with exponential backoff
+                delay = base_delay * (2 ** attempt)
+                app.logger.info(f"Retrying sync for {google_book_id} in {delay:.2f} seconds...")
+                time.sleep(delay)
+                # Continue to the next iteration of the loop
+
+        # --- Non-Retryable Error Handling ---
+        except HttpError as e:
+            status_code = e.resp.status if hasattr(e, 'resp') else 500
+            error_message = f"Sync failed: Google Books API HTTP error (Status: {status_code}): {str(e)}"
+            app.logger.error(f"HttpError syncing {google_book_id}: {error_message}", exc_info=True)
+            if status_code == 404: error_message = "Sync failed: Book not found via Google Books API."
+            # FAIL: Return error immediately
+            return jsonify({'status': 'fail', 'error': error_message}), status_code
+
+        except Exception as e:
+            db.session.rollback() # Rollback DB changes on general error
+            error_message = f"Sync failed: Unexpected error processing book {google_book_id}: {str(e)}"
+            # Check if it's an SSL error caught by the generic handler
+            if "[SSL: WRONG_VERSION_NUMBER]" in str(e) or isinstance(e, ssl.SSLError):
+                 error_message += " [Generic SSL Error Caught]"
+            app.logger.error(f"Unexpected error syncing {google_book_id}: {error_message}", exc_info=True)
+            # FAIL: Return error immediately
+            return jsonify({'status': 'fail', 'error': error_message}), 500
+
+    # Fallback error if loop finishes without success (shouldn't happen with returns in loop)
+    app.logger.error(f"Sync function for {google_book_id} ended unexpectedly after retries.")
+    return jsonify({'status': 'fail', 'error': 'Sync failed after multiple retry attempts.'}), 500
+
 
 
 # === Function 2: Get Book Details FROM Local DB ===
@@ -1900,44 +1924,35 @@ def add_playlist_book_genre(user_id):
 def trigger_recommendations(user_id):
     """
     Generates and saves recommendations based on the user's current playlist.
-    Assumes you have a function:
-        generate_and_save_playlist_recommendations(user_id)
-    which returns a dict like {'status':'success', 'message':..., ...}
-    or {'status':'fail','message':...} on error.
+    Calls the 'add_recommendations' function which is expected to return
+    a Flask Response object (e.g., using jsonify).
     """
     user = User.query.get(user_id)
     if not user:
+        # Return a standard Flask Response using jsonify
         return jsonify({'status': 'fail', 'message': 'User not found'}), 404
-    
-    result_1 = add_recommendations(user_id,db)
 
     try:
-        result = generate_and_save_playlist_recommendations(user_id,db)
-        # Validate that we got a dict back
-        if not isinstance(result, dict):
-            app.logger.error(
-                f"generate_and_save_playlist_recommendations returned invalid type: {type(result)}"
-            )
-            return jsonify({
-                'status': 'fail',
-                'message': 'Internal error: invalid recommendation response.'
-            }), 500
+        # Call the function that generates recommendations and returns a Response
+        response = add_recommendations(user_id)
 
-        # Propagate success or failure from the helper
-        if result.get('status') == 'success':
-            return jsonify(result)
-        else:
-            # Use 400 for client‐level errors, or 500 if you prefer
-            return jsonify(result), 400
+        # --- Removed the dictionary checks ---
+        # The 'add_recommendations' function should handle creating
+        # the correct Response object (e.g., using jsonify with status codes)
+
+        # Simply return the Response object created by add_recommendations
+        return response
 
     except Exception as e:
-        app.logger.error(
-            f"Unexpected error generating recommendations for user {user_id}: {e}",
-            exc_info=True
+        # Log the detailed error
+        logger.error(
+            f"Unexpected error during recommendation generation trigger for user {user_id}: {e}",
+            exc_info=True # Include traceback information in the log
         )
+        # Return a generic server error response
         return jsonify({
             'status': 'fail',
-            'message': 'An unexpected server error occurred.'
+            'message': 'An unexpected server error occurred while generating recommendations.'
         }), 500
         
 # --- Endpoint 2: Clear Playlist ---

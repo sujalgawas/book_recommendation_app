@@ -434,7 +434,7 @@ const BookPage = () => {
                                 <h2 className="section-title">Similar Books</h2>
                                 <div className="similar-books-grid">
                                     {similarBooks.map((similarBook) => (
-                                        <div key={similarBook.google_book_id} className="similar-book-card" onClick={() => navigate(`/book/${similarBook.google_book_id}`)} title={similarBook.title} >
+                                        <div key={similarBook.id} className="similar-book-card" onClick={() => navigate(`/book/${similarBook.id}`)} title={similarBook.title} >
                                             <img
                                                 src={similarBook.image_link || 'https://placehold.co/150x220/eeeeee/cccccc?text=No+Image'}
                                                 alt={similarBook.title}
