@@ -1656,7 +1656,7 @@ def sync_book_details_from_api(google_book_id):
 
             # --- Process Data (Your existing logic) ---
             volume_info = response.get('volumeInfo', {})
-            sale_info = response.get('saleInfo', {})
+            #sale_info = response.get('saleInfo', {})
             image_links = volume_info.get('imageLinks', {})
             image_url = (image_links.get('extraLarge') or image_links.get('large') or
                          image_links.get('medium') or image_links.get('thumbnail'))
